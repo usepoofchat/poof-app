@@ -1,0 +1,28 @@
+{
+  "name": "@poof/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless poof engine: crypto, signaling, WebRTC peer, room session state machine. No React, no DOM coupling.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "^0.7.1",
+    "@poof/protocol": "workspace:*",
+    "@scure/bip39": "^2.4.0"
+  },
+  "devDependencies": {
+    "@poof/tooling": "workspace:*",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.12.0",
+    "fast-check": "^4.10.2",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

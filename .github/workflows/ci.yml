@@ -1,0 +1,62 @@
+name: CI
+
+# Runs on every push and pull request. deploy.yml also runs it (as a reusable workflow) before it
+# releases anything.
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+# Least privilege: CI only reads the repository. Actions are pinned to commit SHAs (Dependabot
+# keeps them current), so a moved tag can't change what runs next to the release secrets.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+          package_json_file: package.json
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # Known vulnerabilities in any dependency, dev tooling included: the build toolchain produces
+      # the attested release, so it counts as much as the code that ships.
+      - name: Dependency audit
+        run: pnpm audit --audit-level=high
+
+      # Same sources → same bytes, for the API bundle and the client engine. Anyone rebuilding a
+      # release from its commit must get the attested checksums (VERIFICATION.md).
+      - name: The build is reproducible
+        run: |
+          for n in 1 2; do
+            pnpm --filter @poof/worker run bundle "$RUNNER_TEMP/worker-$n" > /dev/null
+            pnpm -s build:engine > /dev/null
+            cp dist-engine/poof-engine.js "$RUNNER_TEMP/engine-$n.js"
+          done
+          cmp "$RUNNER_TEMP/worker-1/index.js" "$RUNNER_TEMP/worker-2/index.js"
+          cmp "$RUNNER_TEMP/engine-1.js" "$RUNNER_TEMP/engine-2.js"
+
+      - run: pnpm typecheck:all
+      - run: pnpm lint:all
+      - run: pnpm test:all
+
+      # Boots the API locally and runs the client engine against it.
+      - run: pnpm test:e2e
+
+      # Real Chrome contexts over real WebRTC, through the smoke-test page (Vite) and the local API.
+      # Uses the Google Chrome preinstalled on ubuntu-latest (Playwright channel "chrome").
+      - run: pnpm test:browser

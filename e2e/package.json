@@ -1,0 +1,26 @@
+{
+  "name": "@poof/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end tests: the real client engine against the API running locally. WebRTC is simulated in-process.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "load": "node --experimental-strip-types --disable-warning=ExperimentalWarning load/load-test.ts"
+  },
+  "dependencies": {
+    "@poof/core": "workspace:*",
+    "@poof/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@poof/tooling": "workspace:*",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.12.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

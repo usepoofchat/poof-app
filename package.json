@@ -1,0 +1,42 @@
+{
+  "name": "poof-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Poof: the API, the client engine, and a smoke-test page for local testing. Workspace root.",
+  "scripts": {
+    "dev": "pnpm --workspace-root run --parallel \"/^dev:.*/\"",
+    "dev:web": "vite",
+    "dev:worker": "pnpm --filter @poof/worker run dev",
+    "build:engine": "vite build --config engine.vite.config.ts",
+    "typecheck:all": "pnpm typecheck:web && pnpm --filter \"./worker\" --filter \"./packages/*\" --filter \"./e2e\" run typecheck",
+    "lint:all": "pnpm lint:web && pnpm --filter \"./worker\" --filter \"./packages/*\" --filter \"./e2e\" run lint",
+    "test:all": "pnpm test:web && pnpm --filter \"./worker\" --filter \"./packages/*\" run test",
+    "check": "pnpm typecheck:all && pnpm lint:all && pnpm test:all && pnpm test:e2e",
+    "format": "prettier --write .",
+    "test:e2e": "pnpm --filter @poof/e2e run test",
+    "test:browser": "pnpm --filter @poof/e2e run test:browser",
+    "typecheck:web": "tsc -p tsconfig.json",
+    "lint:web": "eslint .",
+    "test:web": "vitest run"
+  },
+  "devDependencies": {
+    "@poof/tooling": "workspace:*",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^30.1.1",
+    "prettier": "^3.9.9",
+    "typescript": "5.9.3",
+    "vite": "^8.3.2",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "@poof/core": "workspace:*",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
+}

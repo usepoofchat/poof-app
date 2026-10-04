@@ -89,6 +89,8 @@ export const CloseCode = {
   /** Same peerId connected again: the older socket is replaced (zombie-socket recovery). */
   Replaced: 4006,
   ForbiddenOrigin: 4007,
+  /** The creator removed this person from the room; the same peerId can't come back. */
+  Banned: 4008,
 } as const;
 export type CloseCodeValue = (typeof CloseCode)[keyof typeof CloseCode];
 
@@ -101,4 +103,5 @@ export const TERMINAL_CLOSE_CODES: ReadonlySet<number> = new Set([
   CloseCode.RoomNotFound,
   CloseCode.Replaced,
   CloseCode.ForbiddenOrigin,
+  CloseCode.Banned,
 ]);

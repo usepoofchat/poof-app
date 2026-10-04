@@ -44,6 +44,13 @@ export const clientMessageSchema = z.discriminatedUnion("t", [
   }),
   /** Only the creator can destroy: `ownerSecret` must hash to the room's `ownerHash`. */
   z.object({ v, t: z.literal("destroy"), ownerSecret: ownerSecretSchema }),
+  /**
+   * The creator says who they are, so the server can tell everyone which member created the room
+   * (`owner`). Sent after `welcome`, and only to a server whose `welcome` has `owner`.
+   */
+  z.object({ v, t: z.literal("claim"), ownerSecret: ownerSecretSchema }),
+  /** Only the creator can remove someone: that member is disconnected and can't rejoin. */
+  z.object({ v, t: z.literal("ban"), ownerSecret: ownerSecretSchema, peerId: peerIdSchema }),
   z.object({ v, t: z.literal("leave") }),
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
@@ -67,6 +74,11 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
     maxPeers: z.number().int().positive().max(MAX_ROOM_PEERS),
     /** Peers in the room, including this one. */
     peers: z.number().int().positive().max(MAX_ROOM_PEERS),
+    /**
+     * The member who proved they created the room (`claim`), or null while nobody has. Its presence
+     * also tells the client this server understands `claim` and `ban`.
+     */
+    owner: peerIdSchema.nullable().optional(),
     /** The other members already present (a hint for the UI; links come with `paired`). */
     members: z.array(peerIdSchema).max(MAX_ROOM_PEERS),
     limits: limitsSchema,
@@ -85,8 +97,12 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
     v,
     t: z.literal("peer.left"),
     peerId: peerIdSchema,
-    reason: z.enum(["closed", "leave"]),
+    reason: z.enum(["closed", "leave", "banned"]),
   }),
+  /** This member proved they created the room (sent to everyone, the creator included). */
+  z.object({ v, t: z.literal("owner"), peerId: peerIdSchema }),
+  /** The creator removed you: this socket is being closed with CloseCode.Banned. */
+  z.object({ v, t: z.literal("banned") }),
   /**
    * This peerId connected again (e.g. another tab, or a reconnect over a dead socket): this socket
    * is being closed. Sent as a message because a close event can lag behind (it needs the TCP

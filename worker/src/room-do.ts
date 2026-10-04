@@ -90,12 +90,18 @@ interface PeerAttachment {
   errors: number;
   /** `active` sockets count toward capacity. `replaced`/`left` are closing and must be ignored. */
   state: "active" | "replaced" | "left";
+  /** This socket proved it belongs to the room's creator (`claim`). */
+  owner?: boolean;
 }
 
 /** Close codes that must not be sent on the wire (reserved by RFC 6455). */
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015]);
 
 const META_KEY = "meta";
+/** peerIds the creator removed. Wiped with the room. */
+const BANNED_KEY = "banned";
+/** Plenty for a room of at most ten; the oldest entries make room for new ones. */
+const MAX_BANNED = 64;
 
 const encoder = new TextEncoder();
 
@@ -119,6 +125,7 @@ function exceedsUtf8(text: string, maxBytes: number): boolean {
 export class RoomDO extends DurableObject<Env> {
   /** In-memory cache of storage (persist first, cache second). */
   private meta: RoomMeta | null = null;
+  private banned: string[] = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -126,6 +133,7 @@ export class RoomDO extends DurableObject<Env> {
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(WS_PING, WS_PONG));
     void this.ctx.blockConcurrencyWhile(async () => {
       this.meta = (await this.ctx.storage.get<RoomMeta>(META_KEY)) ?? null;
+      this.banned = (await this.ctx.storage.get<string[]>(BANNED_KEY)) ?? [];
     });
   }
 
@@ -293,6 +301,8 @@ export class RoomDO extends DurableObject<Env> {
       );
     }
 
+    if (this.banned.includes(peerId)) return this.rejectSocket(CloseCode.Banned, "banned");
+
     const active = this.activeSockets();
     const mine = active.filter((ws) => this.read(ws).peerId === peerId);
     const others = active.filter((ws) => this.read(ws).peerId !== peerId);
@@ -333,6 +343,7 @@ export class RoomDO extends DurableObject<Env> {
       serverNow: Date.now(),
       maxPeers: meta.maxPeers,
       peers: others.length + 1,
+      owner: this.ownerPeerId(),
       members: others.map((ws) => this.read(ws).peerId),
       limits: this.limits(meta),
       ai: meta.ai === true,
@@ -453,6 +464,54 @@ export class RoomDO extends DurableObject<Env> {
         await this.terminate("destroyed", this.read(ws).peerId);
         return;
       }
+      case "claim": {
+        const meta = this.live();
+        if (!meta || !(await ownerSecretMatches(msg.ownerSecret, meta.ownerHash))) {
+          this.protocolError(ws, "not_owner", "Only the person who created the room can claim it.");
+          return;
+        }
+        if (this.read(ws).state !== "active") return;
+        // One creator: a claim from another tab of theirs moves the badge there.
+        for (const other of this.activeSockets())
+          if (other !== ws) this.write(other, { owner: false });
+        this.write(ws, { owner: true });
+        const peerId = this.read(ws).peerId;
+        for (const other of this.activeSockets())
+          this.send(other, { v: PROTOCOL_VERSION, t: "owner", peerId });
+        return;
+      }
+      case "ban": {
+        const meta = this.live();
+        if (!meta || !(await ownerSecretMatches(msg.ownerSecret, meta.ownerHash))) {
+          this.protocolError(
+            ws,
+            "not_owner",
+            "Only the person who created the room can remove people.",
+          );
+          return;
+        }
+        if (msg.peerId === this.read(ws).peerId) return; // the creator can't remove themselves
+        if (!this.banned.includes(msg.peerId)) {
+          this.banned = [...this.banned, msg.peerId].slice(-MAX_BANNED);
+          await this.ctx.storage.put(BANNED_KEY, this.banned);
+        }
+        const targets = this.activeSockets().filter((s) => this.read(s).peerId === msg.peerId);
+        if (targets.length === 0) return;
+        for (const target of targets) {
+          this.write(target, { state: "left" });
+          this.send(target, { v: PROTOCOL_VERSION, t: "banned" });
+          this.closeQuietly(target, CloseCode.Banned, "banned");
+        }
+        for (const other of this.activeSockets()) {
+          this.send(other, {
+            v: PROTOCOL_VERSION,
+            t: "peer.left",
+            peerId: msg.peerId,
+            reason: "banned",
+          });
+        }
+        return;
+      }
     }
   }
 
@@ -512,6 +571,12 @@ export class RoomDO extends DurableObject<Env> {
   private async save(meta: RoomMeta): Promise<void> {
     await this.ctx.storage.put(META_KEY, meta);
     this.meta = meta;
+  }
+
+  /** The member whose socket proved it belongs to the creator, if they're here. */
+  private ownerPeerId(): string | null {
+    const ws = this.activeSockets().find((s) => this.read(s).owner === true);
+    return ws ? this.read(ws).peerId : null;
   }
 
   private activeSockets(): WebSocket[] {
@@ -661,6 +726,7 @@ export class RoomDO extends DurableObject<Env> {
       );
     }
     this.meta = null;
+    this.banned = [];
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }

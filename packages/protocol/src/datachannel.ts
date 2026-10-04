@@ -103,6 +103,25 @@ export const ctlPlaintextSchema = z.discriminatedUnion("kind", [
     askId: z.string().min(1).max(64),
     state: z.enum(["thinking", "failed"]),
   }),
+  /**
+   * The creator pinned a message for everyone (null = unpinned). Only accepted from the member the
+   * server confirmed as the creator. It carries the text and the author, because people who joined
+   * later never received the message itself.
+   */
+  z.object({
+    kind: z.literal("pin"),
+    pin: z
+      .object({
+        id: z.string().min(1).max(64),
+        text: z.string().min(1).max(CHAT_MAX_CHARS),
+        author: peerIdSchema,
+        nickname: z
+          .string()
+          .max(NICKNAME_MAX_CHARS * 4)
+          .nullable(),
+      })
+      .nullable(),
+  }),
 ]);
 export type CtlPlaintext = z.infer<typeof ctlPlaintextSchema>;
 

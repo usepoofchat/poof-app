@@ -15,7 +15,7 @@ export type PoofErrorCode =
   | "not_available"
   /** The file is over the room's `limits.fileMaxBytes`. */
   | "file_too_large"
-  /** Only the person who created the room can destroy it. */
+  /** Only the person who created the room can do this (destroy, upgrade, remove people, pin). */
   | "not_owner"
   /** Phrase join: not four words from the list. */
   | "invalid_code"

@@ -19,7 +19,9 @@ export type SessionErrorCode =
   | "room_full"
   | "pq_failed"
   | "connection_failed"
-  | "rate_limited";
+  | "rate_limited"
+  /** The creator removed this browser from the room. */
+  | "banned";
 
 export interface SessionError {
   code: SessionErrorCode;
@@ -32,7 +34,9 @@ export type EndReason =
   | "destroyed_by_me"
   | "left_by_me"
   | "connection_lost"
-  | "replaced";
+  | "replaced"
+  /** The creator removed you. */
+  | "banned";
 
 export type LogCode =
   | "key.loaded"
@@ -73,11 +77,14 @@ export type ChatItem =
       status: "sent" | "received";
     }
   | {
-      /** Group rooms: "Peer 3FA2 joined" / "... left". Never sent over the wire. */
+      /**
+       * "Peer 3FA2 joined" / "... left" (group rooms) and "... was removed" (any room). Never sent
+       * over the wire.
+       */
       kind: "system";
       id: string;
       ts: number;
-      event: "joined" | "left";
+      event: "joined" | "left" | "banned";
       peerId: string;
     }
   | {
@@ -130,11 +137,27 @@ export interface MemberView {
   peerId: string;
   /** Short stable label derived from the peerId, e.g. "Peer 3FA2". */
   label: string;
+  /** Their default name until they pick one, the same in every browser, e.g. "Amber Fox". */
+  name: string;
+  /** The server confirmed this member created the room. */
+  owner: boolean;
   /** Their optional display name (sent over the encrypted channel), already normalised. */
   nickname: string | null;
   /** joining = link being set up; sealed = encrypted channel up; failed = link broke. */
   state: "joining" | "sealed" | "failed";
   connectionType: ConnectionType | null;
+}
+
+/** The message the creator pinned for everyone. */
+export interface PinnedMessage {
+  /** The message's id (it may not be in `messages`: people who joined later never received it). */
+  id: string;
+  text: string;
+  /** Who wrote it: their peerId, or null when you did. */
+  from: string | null;
+  /** The author's display name when it was pinned, and their default name. */
+  nickname: string | null;
+  name: string;
 }
 
 /**
@@ -162,6 +185,14 @@ export interface SessionState {
   membersMismatch: boolean;
   /** Your own optional display name. */
   nickname: string | null;
+  /** Your default name, as everyone else sees it until you pick one (e.g. "Amber Fox"). */
+  selfName: string;
+  /** The member the server confirmed as the room's creator (you, when you created it), or null. */
+  ownerId: string | null;
+  /** The server tells who created the room and lets them remove people (and so pin messages). */
+  ownerTools: boolean;
+  /** Set by the creator for everyone; null when nothing is pinned. */
+  pinned: PinnedMessage | null;
   plan: Plan;
   tier: Tier;
   /** Unix ms in the LOCAL clock domain (already corrected for clock skew vs. the server). */

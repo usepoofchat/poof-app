@@ -96,7 +96,8 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      # Uploads the attested bundle byte for byte, without rebundling.
+      # Uploads the attested bundle byte for byte, without rebundling. The bundle path goes before
+      # --var, which takes every argument after it.
       - name: Deploy exactly this bundle
         working-directory: worker
         env:
@@ -104,8 +105,8 @@ jobs:
           DEPLOY_ACCOUNT_ID: ${{ secrets.DEPLOY_ACCOUNT_ID }}
           COMMIT: ${{ github.sha }}
         run: >-
-          pnpm run release
-          --var "COMMIT_SHA:$COMMIT" ../release/worker-bundle/index.js
+          pnpm run release ../release/worker-bundle/index.js
+          --var "COMMIT_SHA:$COMMIT"
 
       - name: The live API runs this commit
         env:

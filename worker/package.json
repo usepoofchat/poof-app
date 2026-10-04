@@ -1,0 +1,30 @@
+{
+  "name": "@poof/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker: HTTP API and WebSocket signaling via Durable Objects.",
+  "scripts": {
+    "dev": "wrangler dev --var ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000",
+    "types": "wrangler types",
+    "typecheck": "wrangler types --check && tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging"
+  },
+  "dependencies": {
+    "@poof/protocol": "workspace:*",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.3.6",
+    "@poof/tooling": "workspace:*",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.12.0",
+    "fast-check": "^4.10.2",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.147.0"
+  }
+}

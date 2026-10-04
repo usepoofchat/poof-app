@@ -1,0 +1,12 @@
+# The smoke-test web app lives at the repo root; everything else is a workspace package.
+packages:
+  - worker
+  - packages/*
+  - tooling
+  - e2e
+
+# pnpm 10 blocks dependency build scripts by default; allow the ones we need.
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+  - sharp

@@ -1,0 +1,134 @@
+name: Deploy
+
+# Deploys the API Worker only (api.usepoof.chat, or the staging Worker). The web app at
+# https://usepoof.chat is hosted separately and is never touched from here.
+#
+# Started by hand only (Actions → Deploy → staging / production): a push to main runs the checks
+# (ci.yml) and nothing else. Every release is built here: bundle → checksum → GitHub attestation →
+# deploy those exact bytes → check that the live API reports this commit. See VERIFICATION.md.
+#
+# Each GitHub environment ("production", "staging") needs:
+#   secrets  CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+#   vars     API_URL (e.g. https://api.usepoof.chat), checked after the deploy
+# and "production" should allow deployments from main only (Settings → Environments).
+# TURN secrets live in the Worker (wrangler secret put), not here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing for the attestation
+      attestations: write
+    env:
+      TARGET: ${{ inputs.environment }}
+      # wrangler.jsonc: the top-level environment is production; staging is `env.staging`.
+      WRANGLER_ENV: ${{ inputs.environment == 'staging' && 'staging' || '' }}
+      GIT_REF: ${{ github.ref }}
+    steps:
+      - name: Production deploys only from main
+        if: env.TARGET == 'production' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Production deploys only from main (this is $GIT_REF)."
+          exit 1
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+          package_json_file: package.json
+
+      # No dependency cache in the job that holds the deploy secrets and signs the release.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Bundle the Worker
+        run: pnpm --filter @poof/worker exec wrangler deploy --dry-run --env="$WRANGLER_ENV" --outdir ../release/worker-bundle
+
+      # The client engine the web app ships (README: "The engine for the web app").
+      - name: Build the client engine
+        run: |
+          pnpm build:engine
+          cp dist-engine/poof-engine.js release/
+
+      - name: Checksums
+        run: |
+          (cd release/worker-bundle && sha256sum index.js) > release/worker-checksums.sha256
+          (cd release && sha256sum poof-engine.js) > release/engine-checksums.sha256
+          cat release/worker-checksums.sha256 release/engine-checksums.sha256
+
+      # Signs (Sigstore, via GitHub) the checksum lists, the bundle and the engine, tied to this
+      # commit and run.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            release/worker-checksums.sha256
+            release/worker-bundle/index.js
+            release/engine-checksums.sha256
+            release/poof-engine.js
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ env.TARGET }}
+          path: |
+            release/worker-checksums.sha256
+            release/worker-bundle/index.js
+            release/engine-checksums.sha256
+            release/poof-engine.js
+          retention-days: 90
+          if-no-files-found: error
+
+      # --no-bundle uploads the attested bundle byte for byte.
+      - name: Deploy exactly this bundle
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          COMMIT: ${{ github.sha }}
+        run: >-
+          pnpm exec wrangler deploy --config wrangler.jsonc --env="$WRANGLER_ENV" --no-bundle
+          --var "COMMIT_SHA:$COMMIT" ../release/worker-bundle/index.js
+
+      - name: The live API runs this commit
+        env:
+          API_URL: ${{ vars.API_URL }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          if [ -z "$API_URL" ]; then
+            echo "::error::Set the API_URL variable on the '${TARGET}' environment."
+            exit 1
+          fi
+          # A new version takes a few seconds to reach every Cloudflare location.
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS "$API_URL/api/health" | grep -q "\"commit\":\"$COMMIT\""; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::$API_URL/api/health does not report $COMMIT."
+          exit 1

@@ -1,0 +1,33 @@
+/* Smoke-test page only. */
+body {
+  font:
+    14px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  margin: 16px;
+  max-width: 900px;
+}
+.error {
+  color: #b00020;
+}
+.messages {
+  list-style: none;
+  padding: 0;
+  min-height: 3em;
+}
+.messages .mine {
+  text-align: right;
+}
+.log {
+  font-size: 12px;
+}
+.log .ok {
+  color: #0a7d32;
+}
+.log .warn {
+  color: #a66300;
+}
+.log .error {
+  color: #b00020;
+}

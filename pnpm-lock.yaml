@@ -88,6 +88,12 @@ importers:
       '@cloudflare/blindrsa-ts':
         specifier: ^0.4.6
         version: 0.4.6
+      '@noble/curves':
+        specifier: ^2.4.0
+        version: 2.4.0
+      '@noble/hashes':
+        specifier: ^2.4.0
+        version: 2.4.0
       '@noble/post-quantum':
         specifier: ^0.7.1
         version: 0.7.1

@@ -15,3 +15,6 @@ export * from "./phrase.ts";
 export * from "./pass.ts";
 export * from "./pay.ts";
 export * from "./support.ts";
+export * from "./ai/venice.ts";
+export * from "./ai/client.ts";
+export * from "./ai/prompt.ts";

@@ -46,6 +46,7 @@ export const errorCodeSchema = z.enum([
   // The AI model
   "ai_not_enabled",
   "ai_not_ready",
+  "ai_forbidden",
   "ai_budget_exhausted",
   "ai_unavailable",
 ]);
@@ -71,8 +72,8 @@ export const createRoomResponseSchema = z.object({
   tier: tierSchema,
   maxPeers: z.number().int().positive().max(MAX_ROOM_PEERS),
   limits: limitsSchema,
-  /** The room includes the AI model. */
-  ai: z.boolean(),
+  /** The room includes the AI model. Absent from older servers: no AI. */
+  ai: z.boolean().default(false),
 });
 export type CreateRoomResponse = z.infer<typeof createRoomResponseSchema>;
 

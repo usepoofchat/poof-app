@@ -23,11 +23,14 @@ export default defineConfig({
           RL_WS_JOIN: generous("1003"),
           RL_HANDSHAKE: generous("1004"),
           RL_PAY: generous("1005"),
+          RL_AI: generous("1006"),
         },
         bindings: {
           TEST_MIGRATIONS: migrations,
           // A throwaway sealing key for the pass keys made during tests.
           PASS_MASTER_KEY: "dGVzdC1vbmx5LXBhc3MtbWFzdGVyLWtleS0zMi1ieXRlcyEh",
+          // A fake provider key: every provider call is answered by a fake in the tests.
+          VENICE_API_KEY: "test-provider-key",
         },
       },
     }),

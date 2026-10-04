@@ -63,7 +63,13 @@ const texts = (s: RoomSession) =>
   s
     .getState()
     .messages.map((m) =>
-      m.kind === "text" ? m.text : m.kind === "file" ? `[file ${m.name}]` : `[${m.event}]`,
+      m.kind === "text"
+        ? m.text
+        : m.kind === "file"
+          ? `[file ${m.name}]`
+          : m.kind === "ai"
+            ? `[ai ${m.text}]`
+            : `[${m.event}]`,
     );
 
 describe("happy path", () => {

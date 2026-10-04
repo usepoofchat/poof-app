@@ -255,10 +255,10 @@ describe("GET /api/pay/config", () => {
       address: null,
       decimals: 18,
     });
-    // 1 h and 24 h, 2 to 10 people, no AI yet.
-    expect(cfg.keys).toHaveLength(18);
-    expect(new Set(cfg.keys.map((k) => k.keyId)).size).toBe(18);
-    expect(cfg.keys.some((k) => k.variant.endsWith("-ai"))).toBe(false);
+    // 1 h and 24 h: 2 to 10 people, or 1 to 10 with the AI model.
+    expect(cfg.keys).toHaveLength(38);
+    expect(new Set(cfg.keys.map((k) => k.keyId)).size).toBe(38);
+    expect(cfg.keys.filter((k) => k.variant.endsWith("-ai"))).toHaveLength(20);
     // Stable: the same keys every time.
     expect((await config()).keys).toEqual(cfg.keys);
   });
@@ -474,7 +474,7 @@ describe("POST /api/pay/redeem", () => {
     expect(res.status).toBe(409);
   });
 
-  it("refuses variants that can't be bought: the AI model, 11 people, odd lifetimes", async () => {
+  it("refuses variants that can't be bought: 11 people, alone without the AI, odd lifetimes", async () => {
     const base = {
       chain: "base",
       token: "USDC",
@@ -485,7 +485,7 @@ describe("POST /api/pay/redeem", () => {
       signature: "0x00",
     };
     for (const variant of [
-      { lifetime: 3600, people: 4, ai: true },
+      { lifetime: 3600, people: 11, ai: true },
       { lifetime: 3600, people: 11, ai: false },
       { lifetime: 3600, people: 1, ai: false },
       { lifetime: 7200, people: 4, ai: false },
@@ -594,6 +594,53 @@ describe("POST /api/rooms/:id/upgrade", () => {
       ).status,
     ).toBe(404);
     expect((await post("/api/rooms", { ownerHash: owner.ownerHash, pass })).status).toBe(200);
+  });
+});
+
+describe("the AI model", () => {
+  const SOLO_AI: Variant = { lifetime: 3600, people: 1, ai: true };
+
+  it("an AI pass makes a quant-room for one person with the AI", async () => {
+    const pass = await buyPass(SOLO_AI);
+    const owner = await newOwner();
+    const res = await post("/api/rooms", { ownerHash: owner.ownerHash, pass });
+    expect(res.status).toBe(200);
+    const room = (await res.json()) as { roomId: string; ai: boolean; maxPeers: number };
+    expect(room).toMatchObject({ plan: "super", tier: "60m", maxPeers: 1, ai: true });
+
+    const me = await TestSocket.connect(room.roomId, peer("me"));
+    expect(await me.next("welcome")).toMatchObject({ ai: true, maxPeers: 1 });
+    // Nobody else fits: it's you and the AI.
+    const other = await TestSocket.connect(room.roomId, peer("other"));
+    expect((await other.next("rejected")).reason).toBe("room_full");
+  });
+
+  it("an upgrade with the AI turns it on (with the room's AI token hash); one without turns it off", async () => {
+    const owner = await newOwner();
+    const free = (await (await post("/api/rooms", { ownerHash: owner.ownerHash })).json()) as {
+      roomId: string;
+      ai: boolean;
+    };
+    expect(free.ai).toBe(false);
+    const alice = await TestSocket.connect(free.roomId, peer("alice"));
+    await alice.next("welcome");
+
+    const aiHash = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    const withAi = await post(`/api/rooms/${free.roomId}/upgrade`, {
+      ownerSecret: owner.ownerSecret,
+      pass: await buyPass({ lifetime: 3600, people: 4, ai: true }),
+      aiHash,
+    });
+    expect(withAi.status).toBe(200);
+    expect(await withAi.json()).toMatchObject({ ai: true, maxPeers: 4 });
+    expect(await alice.next("room.upgraded")).toMatchObject({ ai: true });
+
+    const without = await post(`/api/rooms/${free.roomId}/upgrade`, {
+      ownerSecret: owner.ownerSecret,
+      pass: await buyPass(V4),
+    });
+    expect(await without.json()).toMatchObject({ ai: false });
+    expect(await alice.next("room.upgraded")).toMatchObject({ ai: false });
   });
 });
 
@@ -756,7 +803,7 @@ describe("paying in ETH", () => {
     for (const qs of [
       "chain=solana&variant=3600-4",
       "chain=base&variant=3600-11",
-      "chain=base&variant=3600-4-ai",
+      "chain=base&variant=3600-1",
       "variant=3600-4",
     ]) {
       expect((await call(`/api/pay/quote?${qs}`)).status).toBe(400);

@@ -1,4 +1,5 @@
 import type { Limits, Plan, Tier } from "@poof/protocol";
+import type { PoofErrorCode } from "./errors.ts";
 import type { FileFailReason } from "./files.ts";
 import type { ConnectionType } from "./peer.ts";
 
@@ -105,6 +106,23 @@ export type ChatItem =
       url?: string;
       /** When status is "failed": why. */
       error?: FileFailReason;
+    }
+  | {
+      /**
+       * An answer from the AI model. Mine (I asked) streams in: streaming → done | failed. Someone
+       * else's arrives complete, from the person who asked.
+       */
+      kind: "ai";
+      id: string;
+      /** The id of the text message that asked. */
+      askId: string;
+      /** Who asked: null for me, else their peerId. */
+      askedBy: string | null;
+      text: string;
+      ts: number;
+      status: "streaming" | "done" | "failed";
+      /** When status is "failed": why (ai_budget_exhausted, ai_unavailable, ...). */
+      error?: PoofErrorCode;
     };
 
 /** Another person in the room, as this browser sees them. */
@@ -149,6 +167,13 @@ export interface SessionState {
   /** Unix ms in the LOCAL clock domain (already corrected for clock skew vs. the server). */
   expiresAt: number | null;
   limits: Limits;
+  /**
+   * The room includes the AI model. In a room for one it answers every message; otherwise messages
+   * that start with "@ai".
+   */
+  ai: boolean;
+  /** Questions to the AI still being answered: mine and (from their hints) other people's. */
+  aiPending: Array<{ askId: string; askedBy: string | null }>;
   /** Text, files and (group rooms) join/leave lines, in order. File progress lives on the file items. */
   messages: ChatItem[];
   log: LogEntry[];

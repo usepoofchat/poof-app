@@ -3,6 +3,7 @@ import {
   FrameType,
   PROTOCOL_VERSION,
   roomInfoSchema,
+  type AiPlaintext,
   type ChatPlaintext,
   type CtlPlaintext,
   type IceServer,
@@ -12,6 +13,8 @@ import {
   type RoomInfo,
   type ServerMessage,
 } from "@poof/protocol";
+import { AiClient } from "./ai/client.ts";
+import { buildAiPrompt, mentionsAi, stripMention, type AiTurn } from "./ai/prompt.ts";
 import { inviteUrl } from "./api.ts";
 import { fromBase64Url, toBase64Url, randomBytes, utf8, type Bytes } from "./encoding.ts";
 import { PoofError } from "./errors.ts";
@@ -21,7 +24,13 @@ import type { RtcFactory } from "./peer.ts";
 import { serverError } from "./pay.ts";
 import { createPhraseInvite } from "./phrase.ts";
 import { SignalingClient, type SocketFactory } from "./signaling.ts";
-import { normalizeChatText, normalizeNickname, sanitizeFileName, sanitizeMime } from "./text.ts";
+import {
+  normalizeAiText,
+  normalizeChatText,
+  normalizeNickname,
+  sanitizeFileName,
+  sanitizeMime,
+} from "./text.ts";
 import type {
   ChatItem,
   EndReason,
@@ -85,6 +94,8 @@ const TYPING_TTL_MS = 6000;
 /** While someone keeps typing, "on" is sent again at most this often (keeps their indicator alive). */
 const TYPING_RESEND_MS = 2500;
 const EXPIRY_RETRY_MS = 10_000;
+/** Someone else's "the AI is thinking" hint shows for at most this long without the answer. */
+const AI_PENDING_TTL_MS = 120_000;
 
 const TERMINAL: ReadonlySet<SessionStatus> = new Set(["terminated", "expired", "error"]);
 /** Statuses derived from the links (everything between "welcomed" and an ending). */
@@ -101,6 +112,7 @@ export interface FileLike {
 }
 
 type FileItem = Extract<ChatItem, { kind: "file" }>;
+type AiItem = Extract<ChatItem, { kind: "ai" }>;
 
 const browserObjectUrls = {
   create: (blob: Blob) => URL.createObjectURL(blob),
@@ -155,10 +167,24 @@ export class RoomSession {
   private readonly outgoingFiles = new Map<string, MemberLink[]>();
   /** blob: URLs of received files, revoked when the conversation is wiped. */
   private readonly objectUrls = new Set<string>();
+  /** The AI model (rooms that include it). */
+  private readonly ai: AiClient;
+  /** The creator's registration of the room's AI token, once it has succeeded or is running. */
+  private aiRegistration: Promise<void> | null = null;
+  /** My AI questions still streaming, so leaving the room can stop them. */
+  private readonly aiStreams = new Set<AbortController>();
+  /** Other people's "the AI is thinking" hints → their expiry timers. */
+  private readonly aiPendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly deps: SessionDeps) {
     this.now = deps.now ?? Date.now;
     this.peerId = deps.peerId ?? toBase64Url(randomBytes(16));
+    this.ai = new AiClient({
+      fetch: deps.fetch,
+      origin: deps.origin,
+      roomId: deps.roomId,
+      roomKey: deps.roomKey,
+    });
     this.state = {
       status: "loading",
       error: null,
@@ -177,6 +203,8 @@ export class RoomSession {
       tier: "free",
       expiresAt: null,
       limits: EMPTY_LIMITS,
+      ai: false,
+      aiPending: [],
       messages: [],
       log: [],
       phrase: null,
@@ -226,26 +254,41 @@ export class RoomSession {
   /**
    * Encrypt and send a chat message to everyone connected (one encryption per member). Resolves
    * with the message id once at least one member got it.
+   *
+   * In a room with the AI model, a message that starts with "@ai" (or any message, in a room for
+   * one) also asks the AI. That works with nobody else connected; the answer streams into an `ai`
+   * item and then goes to everyone connected.
    */
   async sendMessage(text: string): Promise<string> {
+    const clean = normalizeChatText(text);
+    const asksAi =
+      this.state.ai && clean !== "" && (this.state.maxPeers === 1 || mentionsAi(clean));
     const targets = this.connectedLinks();
-    if (this.state.status !== "sealed" || targets.length === 0) {
+    if (
+      asksAi ? !LIVE.has(this.state.status) : this.state.status !== "sealed" || targets.length === 0
+    ) {
       throw new PoofError("not_connected", "Not connected to the other person.");
     }
-    const clean = normalizeChatText(text);
     if (!clean) throw new PoofError("invalid_message", "Message is empty.");
+    if (asksAi && this.state.maxPeers > 1 && !stripMention(clean)) {
+      throw new PoofError("invalid_message", "Ask the AI something after @ai.");
+    }
 
     const id = crypto.randomUUID();
     const ts = this.now();
-    const plaintext = utf8(JSON.stringify({ id, text: clean, ts }));
-    const results = await Promise.allSettled(
-      targets.map((link) => link.send(FrameType.Chat, plaintext)),
-    );
-    if (this.state.status !== "sealed" || !results.some((r) => r.status === "fulfilled")) {
-      throw new PoofError("not_connected", "Connection closed.");
+    if (targets.length > 0) {
+      const plaintext = utf8(JSON.stringify({ id, text: clean, ts }));
+      const results = await Promise.allSettled(
+        targets.map((link) => link.send(FrameType.Chat, plaintext)),
+      );
+      const delivered = results.some((r) => r.status === "fulfilled");
+      if (asksAi ? TERMINAL.has(this.state.status) : this.state.status !== "sealed" || !delivered) {
+        throw new PoofError("not_connected", "Connection closed.");
+      }
     }
     this.addMessage({ kind: "text", id, mine: true, from: null, text: clean, ts, status: "sent" });
     this.typingOn = false; // the message itself ends the hint on the other side
+    if (asksAi) void this.askAi(id);
     return id;
   }
 
@@ -394,7 +437,8 @@ export class RoomSession {
       res = await this.deps.fetch(`${this.deps.origin}/api/rooms/${this.deps.roomId}/upgrade`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ownerSecret, pass }),
+        // The room's AI token hash goes along, for a pass that includes the AI model.
+        body: JSON.stringify({ ownerSecret, pass, aiHash: (await this.ai.aiToken()).hash }),
       });
     } catch {
       throw new PoofError("connection_failed", "Could not reach the server.");
@@ -445,6 +489,7 @@ export class RoomSession {
     tier: SessionState["tier"];
     limits: Limits;
     maxPeers?: number;
+    ai?: boolean;
   }): void {
     this.clockOffsetMs = meta.serverNow - this.now();
     this.setState({
@@ -453,6 +498,23 @@ export class RoomSession {
       limits: meta.limits,
       expiresAt: meta.expiresAt - this.clockOffsetMs,
       ...(meta.maxPeers !== undefined ? { maxPeers: meta.maxPeers } : {}),
+      ...(meta.ai !== undefined ? { ai: meta.ai } : {}),
+    });
+    if (meta.ai) this.registerAi();
+  }
+
+  /**
+   * The creator registers the room's AI token hash (derived from the key, which the server never
+   * gets) so that everyone with the link can use the AI. Idempotent on the server; retried on the
+   * next room update if it failed.
+   */
+  private registerAi(): void {
+    const { ownerSecret } = this.deps;
+    if (ownerSecret === undefined || this.aiRegistration) return;
+    const attempt = this.ai.register(ownerSecret);
+    this.aiRegistration = attempt;
+    attempt.catch(() => {
+      if (this.aiRegistration === attempt) this.aiRegistration = null;
     });
   }
 
@@ -598,6 +660,7 @@ export class RoomSession {
         },
         connected: () => this.onLinkConnected(link),
         chat: (message) => this.onChat(link, message),
+        ai: (message) => this.onAi(link, message),
         ctl: (message) => this.onCtl(link, message),
         failed: (failure) => this.onLinkFailed(link, failure),
         files: {
@@ -739,6 +802,8 @@ export class RoomSession {
 
   private dropLink(peerId: string): void {
     this.markTyping(peerId, false);
+    for (const p of this.state.aiPending)
+      if (p.askedBy === peerId) this.markAiPending(peerId, p.askId, false);
     this.links.get(peerId)?.close();
     this.links.delete(peerId);
     const timer = this.lossTimers.get(peerId);
@@ -786,6 +851,9 @@ export class RoomSession {
       case "typing":
         this.markTyping(link.peerId, ctl.on);
         return;
+      case "ai":
+        this.markAiPending(link.peerId, ctl.askId, ctl.state === "thinking");
+        return;
       case "connection_type":
         return; // handled by the link
     }
@@ -807,6 +875,135 @@ export class RoomSession {
     } else if (has) {
       this.setState({ typing: this.state.typing.filter((id) => id !== peerId) });
     }
+  }
+
+  // ── The AI model ──────────────────────────────────────────────────────────
+
+  /**
+   * Ask the AI about my message `askId`: tell the others it's thinking, stream the answer into an
+   * `ai` item, then send the finished answer to everyone connected.
+   */
+  private async askAi(askId: string): Promise<void> {
+    const item: AiItem = {
+      kind: "ai",
+      id: crypto.randomUUID(),
+      askId,
+      askedBy: null,
+      text: "",
+      ts: this.now(),
+      status: "streaming",
+    };
+    const prompt = this.aiPrompt(askId);
+    this.addMessage(item);
+    this.setState({ aiPending: [...this.state.aiPending, { askId, askedBy: null }] });
+    for (const link of this.connectedLinks())
+      void link.sendCtl({ kind: "ai", askId, state: "thinking" });
+
+    const abort = new AbortController();
+    this.aiStreams.add(abort);
+    let text = "";
+    try {
+      if (this.state.isOwner) await this.aiRegistration?.catch(() => undefined);
+      for await (const piece of this.ai.ask(prompt, abort.signal)) {
+        if (TERMINAL.has(this.state.status)) return;
+        text += piece;
+        this.updateAi(item.id, { text: normalizeAiText(text) });
+      }
+      const answer = normalizeAiText(text);
+      if (!answer) throw new PoofError("ai_failed", "The AI gave no answer.");
+      if (TERMINAL.has(this.state.status)) return;
+      this.updateAi(item.id, { text: answer, status: "done" });
+      const frame: AiPlaintext = {
+        id: item.id,
+        askId,
+        askedBy: this.peerId,
+        text: answer,
+        ts: item.ts,
+      };
+      const plaintext = utf8(JSON.stringify(frame));
+      for (const link of this.connectedLinks())
+        void link.send(FrameType.Ai, plaintext).catch(() => undefined);
+    } catch (error) {
+      if (TERMINAL.has(this.state.status)) return;
+      const code = error instanceof PoofError ? error.code : "ai_failed";
+      this.updateAi(item.id, { text: normalizeAiText(text), status: "failed", error: code });
+      for (const link of this.connectedLinks())
+        void link.sendCtl({ kind: "ai", askId, state: "failed" });
+    } finally {
+      this.aiStreams.delete(abort);
+      if (!TERMINAL.has(this.state.status))
+        this.setState({ aiPending: this.state.aiPending.filter((p) => p.askId !== askId) });
+    }
+  }
+
+  /** The question `askId` with the conversation before it, as the AI sees it. */
+  private aiPrompt(askId: string): ReturnType<typeof buildAiPrompt> {
+    const history: AiTurn[] = [];
+    let question: AiTurn | null = null;
+    for (const m of this.state.messages) {
+      if (m.kind === "text") {
+        const turn = { speaker: this.speaker(m.from), text: stripMention(m.text) || m.text };
+        if (m.id === askId) question = turn;
+        else if (!question) history.push(turn);
+      } else if (m.kind === "ai" && m.status === "done" && !question) {
+        history.push({ speaker: "AI", text: m.text });
+      }
+    }
+    return buildAiPrompt(history, question ?? { speaker: this.speaker(null), text: "" });
+  }
+
+  /** How the AI sees a person: their nickname, else their short label. Null = me. */
+  private speaker(peerId: string | null): string {
+    if (peerId === null) return this.state.nickname ?? memberLabel(this.peerId);
+    return this.links.get(peerId)?.nickname ?? memberLabel(peerId);
+  }
+
+  private onAi(link: MemberLink, msg: AiPlaintext): void {
+    if (TERMINAL.has(this.state.status) || this.links.get(link.peerId) !== link) return;
+    // Only the person who asked sends the answer, and only as themselves.
+    if (msg.askedBy !== link.peerId) return;
+    if (this.state.messages.some((m) => m.id === msg.id)) return;
+    const text = normalizeAiText(msg.text);
+    if (!text) return;
+    this.markAiPending(link.peerId, msg.askId, false);
+    this.addMessage({
+      kind: "ai",
+      id: msg.id,
+      askId: msg.askId,
+      askedBy: link.peerId,
+      text,
+      ts: this.now(),
+      status: "done",
+    });
+  }
+
+  /** Someone else's question is (or is no longer) being answered. "on" expires by itself. */
+  private markAiPending(peerId: string, askId: string, on: boolean): void {
+    const key = `${peerId}/${askId}`;
+    const timer = this.aiPendingTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.aiPendingTimers.delete(key);
+    if (TERMINAL.has(this.state.status)) return;
+    const has = this.state.aiPending.some((p) => p.askedBy === peerId && p.askId === askId);
+    if (on) {
+      this.aiPendingTimers.set(
+        key,
+        setTimeout(() => this.markAiPending(peerId, askId, false), AI_PENDING_TTL_MS),
+      );
+      if (!has) this.setState({ aiPending: [...this.state.aiPending, { askId, askedBy: peerId }] });
+    } else if (has) {
+      this.setState({
+        aiPending: this.state.aiPending.filter((p) => !(p.askedBy === peerId && p.askId === askId)),
+      });
+    }
+  }
+
+  private updateAi(id: string, patch: Partial<Pick<AiItem, "text" | "status" | "error">>): void {
+    this.setState({
+      messages: this.state.messages.map((m) =>
+        m.id === id && m.kind === "ai" ? { ...m, ...patch } : m,
+      ),
+    });
   }
 
   // ── Group membership consistency (split-view check) ───────────────────────
@@ -1012,6 +1209,11 @@ export class RoomSession {
     this.mismatchTimer = null;
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
     this.typingTimers.clear();
+    for (const timer of this.aiPendingTimers.values()) clearTimeout(timer);
+    this.aiPendingTimers.clear();
+    for (const abort of this.aiStreams) abort.abort();
+    this.aiStreams.clear();
+    this.ai.forget();
     this.typingOn = false;
     for (const id of [...this.links.keys()]) this.dropLink(id);
     this.outgoingFiles.clear();
@@ -1033,6 +1235,7 @@ export class RoomSession {
       messages: [],
       phrase: null,
       typing: [],
+      aiPending: [],
     });
   }
 
@@ -1044,7 +1247,14 @@ export class RoomSession {
     if (TERMINAL.has(this.state.status)) return;
     this.log("room.expired", "warn");
     this.shutdown();
-    this.setState({ status: "expired", peerPresent: false, members: [], phrase: null, typing: [] });
+    this.setState({
+      status: "expired",
+      peerPresent: false,
+      members: [],
+      phrase: null,
+      typing: [],
+      aiPending: [],
+    });
   }
 
   private fail(code: SessionErrorCode, message: string): void {
@@ -1060,6 +1270,7 @@ export class RoomSession {
       messages: [],
       phrase: null,
       typing: [],
+      aiPending: [],
     });
   }
 

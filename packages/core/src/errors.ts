@@ -26,7 +26,19 @@ export type PoofErrorCode =
   /** The payment wasn't found, isn't confirmed yet, or doesn't match (see the message). */
   | "pay_failed"
   /** The pass was refused: already spent, or not valid. */
-  | "pass_invalid";
+  | "pass_invalid"
+  /** This quant-room doesn't include the AI model. */
+  | "ai_not_enabled"
+  /** The AI model isn't set up for this quant-room yet (its creator hasn't opened it). */
+  | "ai_not_ready"
+  /** This quant-room has used all its AI requests. */
+  | "ai_budget_exhausted"
+  /** The AI model can't be reached right now. */
+  | "ai_unavailable"
+  /** The AI enclave's attestation didn't check out: nothing was sent to it. */
+  | "ai_attestation_failed"
+  /** The AI answer broke off or couldn't be decrypted. */
+  | "ai_failed";
 
 /** Error with a stable machine-readable `code`; UI maps codes to copy, never `message`. */
 export class PoofError extends Error {

@@ -37,6 +37,7 @@
     { "name": "RL_WS_JOIN", "namespace_id": "1003", "simple": { "limit": 10, "period": 60 } },
     { "name": "RL_HANDSHAKE", "namespace_id": "1004", "simple": { "limit": 10, "period": 60 } },
     { "name": "RL_PAY", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_AI", "namespace_id": "1006", "simple": { "limit": 30, "period": 60 } },
   ],
 
   "vars": {
@@ -44,6 +45,8 @@
     "ROOM_MAX_PEERS_FREE": "2",
     // "1" = file transfer in free rooms. Local/e2e testing only, until super rooms exist.
     "ROOM_FILES_FREE": "0",
+    // "1" = the AI model in free rooms. Local testing only (it needs VENICE_API_KEY in .dev.vars).
+    "ROOM_AI_FREE": "0",
     "FILE_MAX_BYTES": "2097152",
     // Comma-separated Origins allowed to call the API from a browser. `pnpm dev` adds the local ones.
     "ALLOWED_ORIGINS": "https://usepoof.chat",

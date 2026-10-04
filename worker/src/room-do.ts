@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  AI_BUDGET,
+  AI_PER_MINUTE,
   CloseCode,
   DEFAULT_FILE_MAX_BYTES,
   FILE_MAX_BYTES_CEILING,
@@ -33,7 +35,28 @@ export interface RoomMeta {
   ownerHash: string;
   /** File transfer in a free room (ROOM_FILES_FREE, local/e2e testing only). */
   freeFiles?: boolean;
+  /** The AI model is part of this room (paid with the pass). */
+  ai?: boolean;
+  /**
+   * base64url(SHA-256(aiToken)), registered by the creator once the room key exists. Members derive
+   * the same token from the link, so the server can check AI calls without ever seeing the key.
+   */
+  aiHash?: string | null;
+  /** AI requests used and allowed (reset by an upgrade that includes the AI). */
+  aiUsed?: number;
+  aiBudget?: number;
+  /** Start (ms) and count of the current one-minute AI window. */
+  aiWindow?: { start: number; count: number };
 }
+
+/** Why an AI call is refused. */
+export type AiRefusal =
+  | "room_not_found"
+  | "ai_not_enabled"
+  | "ai_not_ready"
+  | "ai_forbidden"
+  | "ai_budget_exhausted"
+  | "rate_limited";
 
 export interface CreateRoomOptions {
   roomId: string;
@@ -43,6 +66,18 @@ export interface CreateRoomOptions {
   maxPeers: number;
   ownerHash: string;
   freeFiles?: boolean;
+  ai?: boolean;
+}
+
+/** The AI fields of a room that includes (or now includes) the AI model, with a fresh budget. */
+function aiFields(lifetimeSeconds: number, aiHash: string | null): Partial<RoomMeta> {
+  return {
+    ai: true,
+    aiHash,
+    aiUsed: 0,
+    aiBudget: AI_BUDGET[lifetimeSeconds] ?? AI_BUDGET[3600],
+    aiWindow: { start: 0, count: 0 },
+  };
 }
 
 /** Per-socket state, persisted across hibernation with serializeAttachment (max 2 KiB). */
@@ -110,6 +145,7 @@ export class RoomDO extends DurableObject<Env> {
       upgradedAt: null,
       ownerHash: opts.ownerHash,
       ...(opts.freeFiles ? { freeFiles: true } : {}),
+      ...(opts.ai ? aiFields(opts.ttlSeconds, null) : {}),
     };
     await this.ctx.storage.put(META_KEY, meta);
     this.meta = meta;
@@ -127,6 +163,9 @@ export class RoomDO extends DurableObject<Env> {
     tier: Tier;
     lifetimeSeconds: number;
     maxPeers: number;
+    /** The pass includes the AI model. The new pass decides: without it, the AI is off from now. */
+    ai: boolean;
+    aiHash?: string;
   }): Promise<
     { ok: true; info: RoomInfo } | { ok: false; reason: "room_not_found" | "not_owner" }
   > {
@@ -142,6 +181,9 @@ export class RoomDO extends DurableObject<Env> {
       expiresAt: now + opts.lifetimeSeconds * 1000,
       maxPeers: Math.max(meta.maxPeers, opts.maxPeers),
       upgradedAt: now,
+      ...(opts.ai
+        ? aiFields(opts.lifetimeSeconds, opts.aiHash ?? meta.aiHash ?? null)
+        : { ai: false }),
     };
     await this.ctx.storage.put(META_KEY, next);
     this.meta = next;
@@ -158,10 +200,72 @@ export class RoomDO extends DurableObject<Env> {
         serverNow: info.serverNow,
         maxPeers: next.maxPeers,
         limits: info.limits,
+        ai: info.ai,
         iceServers,
       });
     }
     return { ok: true, info };
+  }
+
+  /**
+   * The creator registers the room's AI token hash (see RoomMeta.aiHash). Registering the same hash
+   * again is fine (a reload of the creator's tab); a different one is refused.
+   */
+  async registerAi(opts: {
+    ownerSecret: string;
+    aiHash: string;
+  }): Promise<
+    | { ok: true }
+    | { ok: false; reason: "room_not_found" | "not_owner" | "ai_not_enabled" | "ai_forbidden" }
+  > {
+    const meta = this.live();
+    if (!meta) return { ok: false, reason: "room_not_found" };
+    if (!(await ownerSecretMatches(opts.ownerSecret, meta.ownerHash)))
+      return { ok: false, reason: "not_owner" };
+    if (!meta.ai) return { ok: false, reason: "ai_not_enabled" };
+    if (meta.aiHash) {
+      return meta.aiHash === opts.aiHash ? { ok: true } : { ok: false, reason: "ai_forbidden" };
+    }
+    await this.save({ ...meta, aiHash: opts.aiHash });
+    return { ok: true };
+  }
+
+  /**
+   * Check an AI call: the room includes the AI, the token is the room's, and (when `spend`) there is
+   * budget left this minute and overall. A spent request is counted before the call goes out.
+   */
+  async authorizeAi(opts: {
+    aiToken: string;
+    spend: boolean;
+  }): Promise<{ ok: true } | { ok: false; reason: AiRefusal }> {
+    const meta = this.live();
+    if (!meta) return { ok: false, reason: "room_not_found" };
+    if (!meta.ai) return { ok: false, reason: "ai_not_enabled" };
+    if (!meta.aiHash) return { ok: false, reason: "ai_not_ready" };
+    if (!(await ownerSecretMatches(opts.aiToken, meta.aiHash)))
+      return { ok: false, reason: "ai_forbidden" };
+    if (!opts.spend) return { ok: true };
+    if ((meta.aiUsed ?? 0) >= (meta.aiBudget ?? 0))
+      return { ok: false, reason: "ai_budget_exhausted" };
+    const now = Date.now();
+    const window =
+      meta.aiWindow && now - meta.aiWindow.start < 60_000
+        ? meta.aiWindow
+        : { start: now, count: 0 };
+    if (window.count >= AI_PER_MINUTE) return { ok: false, reason: "rate_limited" };
+    await this.save({
+      ...meta,
+      aiUsed: (meta.aiUsed ?? 0) + 1,
+      aiWindow: { start: window.start, count: window.count + 1 },
+    });
+    return { ok: true };
+  }
+
+  /** Give back a request the AI provider never answered. */
+  async refundAi(): Promise<void> {
+    const meta = this.live();
+    if (!meta?.ai || !meta.aiUsed) return;
+    await this.save({ ...meta, aiUsed: meta.aiUsed - 1 });
   }
 
   /** Public room info, or null if the room doesn't exist or has expired. */
@@ -231,6 +335,7 @@ export class RoomDO extends DurableObject<Env> {
       peers: others.length + 1,
       members: others.map((ws) => this.read(ws).peerId),
       limits: this.limits(meta),
+      ai: meta.ai === true,
     });
 
     // Pair the newcomer with everyone already here (a reconnecting peer re-pairs with everyone).
@@ -399,8 +504,14 @@ export class RoomDO extends DurableObject<Env> {
       tier: meta.tier,
       maxPeers: meta.maxPeers,
       limits: this.limits(meta),
+      ai: meta.ai === true,
       peers: this.activeSockets().length,
     };
+  }
+
+  private async save(meta: RoomMeta): Promise<void> {
+    await this.ctx.storage.put(META_KEY, meta);
+    this.meta = meta;
   }
 
   private activeSockets(): WebSocket[] {

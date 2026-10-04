@@ -14,6 +14,7 @@ import type {
   RtcStatsLike,
   WebSocketLike,
 } from "../src/index.ts";
+import { FakeAi } from "./fake-ai.ts";
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 export { tick };
@@ -91,6 +92,8 @@ interface RoomState {
   joinedAt: Map<string, number>;
   /** The creator's secret. The real server stores its hash; the fake compares it directly. */
   ownerSecret: string;
+  /** The room includes the AI model (see FakeAi for its endpoints). */
+  ai: boolean;
 }
 
 /**
@@ -111,8 +114,17 @@ export class FakeRoomServer {
   /** Rejections send `rejected` but the close frame never arrives (as seen in wrangler dev). */
   loseRejectCloseFrames = false;
   private clock = 0;
+  /** The AI model's endpoints. */
+  readonly ai = new FakeAi();
 
   constructor(private readonly now: () => number = Date.now) {}
+
+  /** Turn the AI model on for a room (as a pass with the AI would). */
+  enableAi(roomId: string, budget?: number): void {
+    const room = this.rooms.get(roomId);
+    if (room) room.ai = true;
+    this.ai.enable(roomId, budget);
+  }
 
   /** The secret of the creator of every room this fake creates (tests pass it to the creator's session). */
   static readonly OWNER_SECRET = "o".repeat(43);
@@ -131,6 +143,7 @@ export class FakeRoomServer {
       peers: new Map(),
       joinedAt: new Map(),
       ownerSecret,
+      ai: false,
     };
     this.rooms.set(roomId, room);
     return room;
@@ -156,6 +169,10 @@ export class FakeRoomServer {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       this.fetchCalls.push(url);
+      const path = new URL(url).pathname;
+      if (path.startsWith("/api/ai/") || /^\/api\/rooms\/[^/]+\/ai$/.test(path)) {
+        return this.ai.handle(path, init).then((r) => r ?? new Response(null, { status: 404 }));
+      }
       const handshake = /\/api\/handshakes\/([^/]+)(\/take)?$/.exec(new URL(url).pathname);
       if (handshake)
         return Promise.resolve(this.mailbox(handshake[1] ?? "", Boolean(handshake[2]), init));
@@ -181,6 +198,7 @@ export class FakeRoomServer {
         tier: room.tier,
         maxPeers: room.maxPeers,
         limits: { fileTransfer: room.plan === "super", fileMaxBytes: 2_097_152 },
+        ai: room.ai,
         peers: room.peers.size,
       };
       return Promise.resolve(Response.json(info));
@@ -199,9 +217,10 @@ export class FakeRoomServer {
   readonly spentPasses = new Set<string>();
   private upgrade(roomId: string, init: RequestInit | undefined): Response {
     const room = this.rooms.get(roomId);
-    const { ownerSecret, pass } = JSON.parse(init?.body as string) as {
+    const { ownerSecret, pass, aiHash } = JSON.parse(init?.body as string) as {
       ownerSecret: string;
-      pass: { msg: string; variant: { lifetime: number; people: number } };
+      pass: { msg: string; variant: { lifetime: number; people: number; ai?: boolean } };
+      aiHash?: string;
     };
     if (!room || this.now() >= room.expiresAt) {
       return Response.json(
@@ -231,6 +250,11 @@ export class FakeRoomServer {
     room.tier = pass.variant.lifetime === 86400 ? "24h" : "60m";
     room.expiresAt = this.now() + pass.variant.lifetime * 1000;
     room.maxPeers = Math.max(room.maxPeers, pass.variant.people);
+    room.ai = pass.variant.ai === true;
+    if (room.ai) {
+      this.ai.enable(roomId);
+      this.ai.rooms.get(roomId)!.aiHash = aiHash ?? null;
+    }
     const limits = { fileTransfer: true, fileMaxBytes: 2_097_152 };
     for (const socket of room.peers.values()) {
       this.send(socket, {
@@ -242,6 +266,7 @@ export class FakeRoomServer {
         serverNow: this.now() + this.clockSkewMs,
         maxPeers: room.maxPeers,
         limits,
+        ai: room.ai,
         iceServers: this.upgradeIceServers,
       });
     }
@@ -253,6 +278,7 @@ export class FakeRoomServer {
       tier: room.tier,
       maxPeers: room.maxPeers,
       limits,
+      ai: room.ai,
       peers: room.peers.size,
     };
     return Response.json(info);
@@ -330,6 +356,7 @@ export class FakeRoomServer {
       peers: others.length + 1,
       members: others,
       limits: { fileTransfer: room.plan === "super", fileMaxBytes: 2_097_152 },
+      ai: room.ai,
     });
     if (others.length > 0) this.pair(room, peerId, others);
 

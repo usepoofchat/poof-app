@@ -1,10 +1,18 @@
-import { CHAT_MAX_CHARS, FILE_NAME_MAX_CHARS, NICKNAME_MAX_CHARS } from "@poof/protocol";
+import {
+  AI_MAX_CHARS,
+  CHAT_MAX_CHARS,
+  FILE_NAME_MAX_CHARS,
+  NICKNAME_MAX_CHARS,
+} from "@poof/protocol";
 
 /**
  * Normalise chat text on both send and receive: NFKC, CRLF → LF, strip control characters EXCEPT
  * newline and tab (multi-line messages are a feature), trim, cap length by code points.
  */
-export function normalizeChatText(value: string | null | undefined): string {
+export function normalizeChatText(
+  value: string | null | undefined,
+  maxChars = CHAT_MAX_CHARS,
+): string {
   const text = (value ?? "")
     .normalize("NFKC")
     .replace(/\r\n?/g, "\n")
@@ -12,7 +20,12 @@ export function normalizeChatText(value: string | null | undefined): string {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
     .trim();
   const points = Array.from(text);
-  return points.length > CHAT_MAX_CHARS ? points.slice(0, CHAT_MAX_CHARS).join("") : text;
+  return points.length > maxChars ? points.slice(0, maxChars).join("") : text;
+}
+
+/** An AI answer: the same cleanup as chat text, with the AI's longer cap. */
+export function normalizeAiText(value: string | null | undefined): string {
+  return normalizeChatText(value, AI_MAX_CHARS);
 }
 
 /** Defensive file name cleanup for received files: no paths, no control chars, ≤ 255 characters. */

@@ -65,9 +65,7 @@ export const aiChatRequestSchema = z.object({
   clientPubKey: secp256k1PubSchema,
   modelPubKey: z.string().regex(/^(04)?[0-9a-f]{128}$/i, "invalid model key"),
   messages: z
-    .array(
-      z.object({ role: z.enum(["system", "user"]), content: aiCiphertextSchema }).strict(),
-    )
+    .array(z.object({ role: z.enum(["system", "user"]), content: aiCiphertextSchema }).strict())
     .min(1)
     .max(4),
 });

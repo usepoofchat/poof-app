@@ -77,6 +77,8 @@ function staticState(
     log: [],
     phrase: null,
     typing: [],
+    ai: false,
+    aiPending: [],
   };
 }
 

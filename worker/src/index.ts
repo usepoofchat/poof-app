@@ -24,6 +24,7 @@ import {
   rejectedSocket,
   withCors,
 } from "./http.ts";
+import { aiAttestation, aiChat, registerAi } from "./ai.ts";
 import { payConfig, payQuote, redeem, spendPass, unspendPass } from "./pay.ts";
 import { positiveInt, randomId } from "./util.ts";
 
@@ -112,6 +113,20 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return redeem(request, env);
   }
 
+  if (path === "/api/ai/attestation") {
+    if (method !== "POST") return methodNotAllowed();
+    return aiAttestation(request, env);
+  }
+  if (path === "/api/ai/chat") {
+    if (method !== "POST") return methodNotAllowed();
+    return aiChat(request, env);
+  }
+  const roomAi = /^\/api\/rooms\/([^/]+)\/ai$/.exec(path);
+  if (roomAi) {
+    if (method !== "POST") return methodNotAllowed();
+    return registerAi(request, env, roomAi[1]);
+  }
+
   const upgrade = /^\/api\/rooms\/([^/]+)\/upgrade$/.exec(path);
   if (upgrade) {
     if (method !== "POST") return methodNotAllowed();
@@ -170,6 +185,8 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
     ownerHash: parsed.data.ownerHash,
     // Off in production: files are a super-room feature. "1" turns them on for local/e2e testing.
     freeFiles: String(env.ROOM_FILES_FREE) === "1",
+    // Off in production: the AI is paid. "1" adds it to free rooms for local testing.
+    ai: String(env.ROOM_AI_FREE) === "1",
   });
   if (!info) return apiError("internal_error", "Could not create room.", 500);
 
@@ -193,6 +210,7 @@ async function createSuperRoom(env: Env, ownerHash: string, pass: unknown): Prom
       tier: tierFor(variant),
       maxPeers: variant.people,
       ownerHash,
+      ai: variant.ai,
     })
     .catch(() => null);
   if (!info) {
@@ -227,6 +245,8 @@ async function upgradeRoom(
       tier: tierFor(variant),
       lifetimeSeconds: variant.lifetime,
       maxPeers: variant.people,
+      ai: variant.ai,
+      ...(parsed.data.aiHash ? { aiHash: parsed.data.aiHash } : {}),
     })
     .catch(() => null);
   if (!result?.ok) {

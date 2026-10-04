@@ -11,4 +11,6 @@ interface Env {
    * PAY_TREASURY) Super Quant-Rooms can't be bought.
    */
   PASS_MASTER_KEY?: string;
+  /** The AI provider's API key. Without it, AI requests answer ai_unavailable. */
+  VENICE_API_KEY?: string;
 }

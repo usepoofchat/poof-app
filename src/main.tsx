@@ -244,6 +244,13 @@ function Room({ forceRelay }: { forceRelay: boolean }) {
             <li key={item.id} className="system" data-system={item.event}>
               {`${nameOf(item.peerId)} ${item.event}`}
             </li>
+          ) : item.kind === "ai" ? (
+            <li key={item.id} className="ai" data-kind="ai" data-ai-status={item.status}>
+              <span className="who">
+                {item.askedBy ? `AI (asked by ${nameOf(item.askedBy)}): ` : "AI: "}
+              </span>
+              {item.text}
+            </li>
           ) : (
             <li
               key={item.id}

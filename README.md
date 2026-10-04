@@ -88,9 +88,9 @@ pnpm --filter @poof/e2e run load --url http://localhost:8787   # load test again
 
 ## Deploy
 
-Attested releases go through GitHub Actions (`.github/workflows/deploy.yml`), started by hand: Actions → Deploy → staging or production. It runs the checks, bundles the API and the engine, attests both, deploys exactly that bundle and checks that `/api/health` reports the commit. Production is `api.usepoof.chat`; staging is a separate deployment with its own state.
+Attested releases go through GitHub Actions (`.github/workflows/deploy.yml`), started by hand from `main`: Actions → Deploy → Run workflow. It runs the checks, bundles the API and the engine, attests both, deploys exactly that bundle to `api.usepoof.chat` and checks that `/api/health` reports the commit. There is no staging environment: changes are tried against `pnpm dev` first.
 
-Setup, once: GitHub environments `production` and `staging`, each with secrets `DEPLOY_TOKEN`, `DEPLOY_ACCOUNT_ID` and variable `API_URL`. The TURN secrets (`TURN_KEY_ID`, `TURN_API_TOKEN`) are set on each deployed API, not in GitHub.
+Setup, once: a GitHub environment `production` with secrets `DEPLOY_TOKEN`, `DEPLOY_ACCOUNT_ID` and variable `API_URL`. The TURN secrets (`TURN_KEY_ID`, `TURN_API_TOKEN`) are set on the deployed API, not in GitHub.
 
 ## Invariants (do not break)
 

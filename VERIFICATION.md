@@ -14,7 +14,7 @@ Below, `RUN_ID` is the number of a run of the Deploy workflow on GitHub, and `CO
 4. Exactly that bundle is deployed (uploaded without rebundling, so the attested bytes are what goes live), with the commit baked in.
 5. The workflow checks that the live API reports that commit.
 
-The files from step 3 are attached to the run as the artifact `release-production` (or `release-staging`) for 90 days.
+The files from step 3 are attached to the run as the artifact `release` for 90 days.
 
 ## 1. Which commit is live
 
@@ -28,7 +28,7 @@ A deployment that reports `"commit":"dev"` was not made by the Deploy workflow.
 ## 2. Check the release
 
 ```bash
-gh run download RUN_ID --repo usepoofchat/poof-app -n release-production -D release
+gh run download RUN_ID --repo usepoofchat/poof-app -n release -D release
 gh attestation verify release/worker-checksums.sha256 --repo usepoofchat/poof-app
 gh attestation verify release/worker-bundle/index.js --repo usepoofchat/poof-app
 ```

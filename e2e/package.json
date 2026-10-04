@@ -18,7 +18,7 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@poof/tooling": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.3",
     "eslint": "^10.12.0",
     "typescript": "5.9.3",
     "vitest": "^4.1.11"

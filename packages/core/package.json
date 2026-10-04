@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@poof/tooling": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.3",
     "eslint": "^10.12.0",
     "fast-check": "^4.10.2",
     "typescript": "5.9.3",

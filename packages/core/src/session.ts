@@ -37,6 +37,7 @@ import type {
   LogCode,
   LogEntry,
   MemberView,
+  PinnedMessage,
   SessionError,
   SessionErrorCode,
   SessionState,
@@ -134,6 +135,95 @@ export function memberLabel(peerId: string): string {
   return `Peer ${hex.toUpperCase()}`;
 }
 
+const NAME_WORDS = [
+  [
+    "Amber",
+    "Brave",
+    "Calm",
+    "Clever",
+    "Cosmic",
+    "Crimson",
+    "Dusty",
+    "Gentle",
+    "Golden",
+    "Happy",
+    "Hidden",
+    "Humble",
+    "Jolly",
+    "Lucky",
+    "Lunar",
+    "Mellow",
+    "Misty",
+    "Noble",
+    "Polar",
+    "Quiet",
+    "Rapid",
+    "Rusty",
+    "Silent",
+    "Silver",
+    "Sleepy",
+    "Snowy",
+    "Solar",
+    "Swift",
+    "Tiny",
+    "Velvet",
+    "Witty",
+    "Wild",
+  ],
+  [
+    "Badger",
+    "Bear",
+    "Beaver",
+    "Bison",
+    "Crane",
+    "Crow",
+    "Deer",
+    "Dolphin",
+    "Eagle",
+    "Falcon",
+    "Ferret",
+    "Finch",
+    "Fox",
+    "Hare",
+    "Hawk",
+    "Heron",
+    "Koala",
+    "Lynx",
+    "Marten",
+    "Moose",
+    "Otter",
+    "Owl",
+    "Panda",
+    "Raven",
+    "Robin",
+    "Seal",
+    "Sparrow",
+    "Stoat",
+    "Swan",
+    "Tiger",
+    "Walrus",
+    "Wolf",
+  ],
+] as const;
+
+/**
+ * "Amber Fox": a default name from the first two bytes of the peerId, the same in every browser.
+ * Everyone can replace theirs with a display name (`setNickname`).
+ */
+export function memberName(peerId: string): string {
+  let bytes: Uint8Array;
+  try {
+    bytes = fromBase64Url(peerId);
+  } catch {
+    bytes = utf8(peerId);
+  }
+  const [adjectives, animals] = NAME_WORDS;
+  return `${adjectives[(bytes[0] ?? 0) % adjectives.length]} ${animals[(bytes[1] ?? 0) % animals.length]}`;
+}
+
+/** A pin as it travels between members. */
+type PinWire = { id: string; text: string; author: string; nickname: string | null };
+
 /**
  * The headless room engine. One instance per room page. It owns the signaling socket and one
  * `MemberLink` per other person (WebRTC + hybrid key exchange + encrypted frames), and exposes a
@@ -157,6 +247,12 @@ export class RoomSession {
   private readonly typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private typingOn = false;
   private typingSentAt = 0;
+  /** The pin I set (creator), re-sent to everyone who joins later. */
+  private pinWire: PinWire | null = null;
+  /** Pins that arrived before the server said who created the room, by sender. */
+  private readonly pendingPins = new Map<string, PinWire | null>();
+  /** People the creator removed: no new links with them, whatever the server says. */
+  private readonly bannedPeers = new Set<string>();
   private joinTimer: ReturnType<typeof setTimeout> | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private phraseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -199,6 +295,10 @@ export class RoomSession {
       members: [],
       membersMismatch: false,
       nickname: null,
+      selfName: memberName(this.peerId),
+      ownerId: null,
+      ownerTools: false,
+      pinned: null,
       plan: "free",
       tier: "free",
       expiresAt: null,
@@ -371,6 +471,43 @@ export class RoomSession {
     this.setState({ nickname });
     for (const link of this.connectedLinks()) void link.sendCtl({ kind: "hello", nickname });
     return nickname;
+  }
+
+  /**
+   * Creator only: remove someone for good. The server disconnects them and refuses them from then
+   * on; everyone else drops their link to them. Needs a server with `ownerTools`.
+   */
+  ban(peerId: string): void {
+    const { ownerSecret } = this.deps;
+    if (ownerSecret === undefined) {
+      throw new PoofError("not_owner", "Only the person who created the room can remove people.");
+    }
+    if (!this.state.ownerTools)
+      throw new PoofError("not_available", "This server can't remove people.");
+    if (TERMINAL.has(this.state.status) || peerId === this.peerId) return;
+    this.signaling?.send({ v: PROTOCOL_VERSION, t: "ban", ownerSecret, peerId });
+  }
+
+  /**
+   * Creator only: pin one of the chat's text messages for everyone (null = unpin). People who join
+   * later get it too. Others accept it only from the member the server confirmed as the creator.
+   */
+  pin(messageId: string | null): void {
+    if (!this.state.isOwner) {
+      throw new PoofError("not_owner", "Only the person who created the room can pin messages.");
+    }
+    if (TERMINAL.has(this.state.status)) return;
+    let wire: PinWire | null = null;
+    if (messageId !== null) {
+      const item = this.state.messages.find((m) => m.id === messageId);
+      if (item?.kind !== "text") throw new PoofError("invalid_message", "There's no such message.");
+      const author = item.mine ? this.peerId : (item.from ?? this.peerId);
+      const nickname = item.mine ? this.state.nickname : (this.links.get(author)?.nickname ?? null);
+      wire = { id: item.id, text: item.text, author, nickname };
+    }
+    this.pinWire = wire;
+    this.setState({ pinned: wire && this.toPinned(wire) });
+    for (const link of this.connectedLinks()) void link.sendCtl({ kind: "pin", pin: wire });
   }
 
   /**
@@ -553,6 +690,17 @@ export class RoomSession {
       case "welcome":
         this.applyRoomMeta(msg);
         this.clearJoinTimer();
+        // A server that names the creator also takes `claim` (older servers would count it as an error).
+        if (msg.owner !== undefined) {
+          if (!this.state.ownerTools) this.setState({ ownerTools: true });
+          if (msg.owner !== null) this.setOwner(msg.owner);
+          if (this.deps.ownerSecret !== undefined)
+            this.signaling?.send({
+              v: PROTOCOL_VERSION,
+              t: "claim",
+              ownerSecret: this.deps.ownerSecret,
+            });
+        }
         if (this.state.status === "loading") {
           this.setState({ status: "waiting", peerPresent: msg.peers >= 2 });
           this.log("signaling.connected", "ok");
@@ -567,7 +715,14 @@ export class RoomSession {
         this.links.get(msg.from)?.handleSignal(msg.payload);
         return;
       case "peer.left":
-        this.onPeerLeft(msg.peerId);
+        if (msg.reason === "banned") this.onBanned(msg.peerId);
+        else this.onPeerLeft(msg.peerId);
+        return;
+      case "owner":
+        this.setOwner(msg.peerId);
+        return;
+      case "banned":
+        this.terminate("banned");
         return;
       case "replaced":
         this.terminate("replaced");
@@ -612,6 +767,11 @@ export class RoomSession {
       case CloseCode.Replaced:
         this.terminate("replaced");
         return;
+      case CloseCode.Banned:
+        if (this.state.status === "loading")
+          this.fail("banned", "The person who created this room removed you from it.");
+        else this.terminate("banned");
+        return;
       default:
         this.fail("connection_failed", "Lost connection to the server.");
     }
@@ -621,7 +781,7 @@ export class RoomSession {
 
   private onPaired(peerId: string, role: PeerRole, iceServers: IceServer[]): void {
     // A modified server must not be able to make this browser open links without end.
-    if (peerId === this.peerId) return;
+    if (peerId === this.peerId || this.bannedPeers.has(peerId)) return;
     if (this.isGroup && !this.links.has(peerId) && this.links.size >= this.state.maxPeers - 1)
       return;
     // Once a channel is being upgraded or is live, a repeated `paired` (the server re-pairs when
@@ -689,6 +849,7 @@ export class RoomSession {
     if (TERMINAL.has(this.state.status) || this.links.get(link.peerId) !== link) return;
     if (this.state.nickname !== null)
       void link.sendCtl({ kind: "hello", nickname: this.state.nickname });
+    if (this.pinWire) void link.sendCtl({ kind: "pin", pin: this.pinWire });
     if (!this.isGroup) return;
     this.addMessage({
       kind: "system",
@@ -736,6 +897,55 @@ export class RoomSession {
     this.dropLink(peerId);
     this.refresh({ peerPresent: this.links.size > 0 });
     this.announceMembers();
+  }
+
+  /**
+   * The creator removed this member (the server says so, and has already disconnected them). In a
+   * room for two the creator goes back to waiting, conversation kept, instead of the room ending.
+   */
+  private onBanned(peerId: string): void {
+    this.bannedPeers.add(peerId);
+    const link = this.links.get(peerId);
+    this.log("peer.left", "warn", this.withPeer(peerId, { reason: "banned" }));
+    if (!link) return;
+    if (link.everConnected) {
+      this.addMessage({
+        kind: "system",
+        id: crypto.randomUUID(),
+        ts: this.now(),
+        event: "banned",
+        peerId,
+      });
+    }
+    this.dropLink(peerId);
+    this.refresh({
+      peerPresent: this.links.size > 0,
+      ...(this.isGroup ? {} : { role: null }),
+    });
+    this.announceMembers();
+  }
+
+  /** The server confirmed who created the room. Pins they sent before that now count. */
+  private setOwner(peerId: string): void {
+    if (TERMINAL.has(this.state.status)) return;
+    if (this.state.ownerId !== peerId) {
+      this.setState({ ownerId: peerId });
+      this.refresh();
+    }
+    const pending = this.pendingPins.get(peerId);
+    this.pendingPins.clear();
+    if (pending !== undefined) this.setState({ pinned: pending && this.toPinned(pending) });
+  }
+
+  private toPinned(wire: PinWire): PinnedMessage {
+    const mine = wire.author === this.peerId;
+    return {
+      id: wire.id,
+      text: wire.text,
+      from: mine ? null : wire.author,
+      nickname: mine ? this.state.nickname : wire.nickname,
+      name: memberName(wire.author),
+    };
   }
 
   private onLinkFailed(link: MemberLink, failure: MemberFailure): void {
@@ -854,6 +1064,19 @@ export class RoomSession {
       case "ai":
         this.markAiPending(link.peerId, ctl.askId, ctl.state === "thinking");
         return;
+      case "pin": {
+        let pin: PinWire | null = null;
+        if (ctl.pin) {
+          const text = normalizeChatText(ctl.pin.text);
+          if (!text) return;
+          pin = { ...ctl.pin, text, nickname: normalizeNickname(ctl.pin.nickname) };
+        }
+        // Only the creator pins. Until the server has said who that is, keep it aside.
+        if (this.state.ownerId === null) this.pendingPins.set(link.peerId, pin);
+        else if (link.peerId === this.state.ownerId)
+          this.setState({ pinned: pin && this.toPinned(pin) });
+        return;
+      }
       case "connection_type":
         return; // handled by the link
     }
@@ -1215,6 +1438,7 @@ export class RoomSession {
     this.aiStreams.clear();
     this.ai.forget();
     this.typingOn = false;
+    this.pendingPins.clear();
     for (const id of [...this.links.keys()]) this.dropLink(id);
     this.outgoingFiles.clear();
     this.signaling?.close();
@@ -1236,6 +1460,7 @@ export class RoomSession {
       phrase: null,
       typing: [],
       aiPending: [],
+      pinned: null,
     });
   }
 
@@ -1271,6 +1496,7 @@ export class RoomSession {
       phrase: null,
       typing: [],
       aiPending: [],
+      pinned: null,
     });
   }
 
@@ -1288,6 +1514,8 @@ export class RoomSession {
     const members: MemberView[] = links.map((link) => ({
       peerId: link.peerId,
       label: memberLabel(link.peerId),
+      name: memberName(link.peerId),
+      owner: link.peerId === this.state.ownerId,
       nickname: link.nickname,
       state: link.state === "connected" ? "sealed" : link.live ? "joining" : "failed",
       connectionType: link.connectionType,

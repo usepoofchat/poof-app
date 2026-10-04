@@ -166,6 +166,19 @@ describe("client messages", () => {
     ).toBe(false);
   });
 
+  it("claim and ban need the owner secret; ban needs a peerId", () => {
+    const ownerSecret = "S".repeat(43);
+    expect(clientMessageSchema.safeParse({ v, t: "claim", ownerSecret }).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ v, t: "claim" }).success).toBe(false);
+    expect(clientMessageSchema.safeParse({ v, t: "ban", ownerSecret, peerId: id }).success).toBe(
+      true,
+    );
+    expect(clientMessageSchema.safeParse({ v, t: "ban", ownerSecret }).success).toBe(false);
+    expect(clientMessageSchema.safeParse({ v, t: "ban", ownerSecret, peerId: "bad" }).success).toBe(
+      false,
+    );
+  });
+
   it("rejects wrong versions, unknown types and missing fields", () => {
     expect(clientMessageSchema.safeParse({ v: 2, t: "leave" }).success).toBe(false);
     expect(clientMessageSchema.safeParse({ t: "leave" }).success).toBe(false);
@@ -200,6 +213,9 @@ describe("server messages", () => {
     },
     { t: "signal", from: id, payload: { kind: "answer", sdp: "x" } },
     { t: "peer.left", peerId: id, reason: "leave" },
+    { t: "peer.left", peerId: id, reason: "banned" },
+    { t: "owner", peerId: id },
+    { t: "banned" },
     { t: "replaced" },
     { t: "room.expired" },
     { t: "room.destroyed", by: id },
@@ -221,6 +237,13 @@ describe("server messages", () => {
 
   it.each(samples)("parses %j", (sample) => {
     expect(serverMessageSchema.safeParse({ ...base, ...sample }).success).toBe(true);
+  });
+
+  it("welcome may name the creator (or say nobody has claimed), or leave it out (older servers)", () => {
+    const welcome = { ...base, ...samples[0] };
+    expect(serverMessageSchema.safeParse({ ...welcome, owner: id }).success).toBe(true);
+    expect(serverMessageSchema.safeParse({ ...welcome, owner: null }).success).toBe(true);
+    expect(serverMessageSchema.safeParse({ ...welcome, owner: "bad" }).success).toBe(false);
   });
 
   it("rejects malformed variants", () => {
@@ -342,6 +365,24 @@ describe("DataChannel schemas", () => {
       ctlPlaintextSchema.safeParse({ kind: "members", peerIds: Array(11).fill(id) }).success,
     ).toBe(false);
     expect(ctlPlaintextSchema.safeParse({ kind: "members", peerIds: ["bad"] }).success).toBe(false);
+  });
+
+  it("carries the creator's pin (or its removal)", () => {
+    const pin = { id: "m1", text: "meet at 8", author: id, nickname: null };
+    expect(ctlPlaintextSchema.safeParse({ kind: "pin", pin }).success).toBe(true);
+    expect(ctlPlaintextSchema.safeParse({ kind: "pin", pin: null }).success).toBe(true);
+    expect(ctlPlaintextSchema.safeParse({ kind: "pin", pin: { ...pin, text: "" } }).success).toBe(
+      false,
+    );
+    expect(
+      ctlPlaintextSchema.safeParse({
+        kind: "pin",
+        pin: { ...pin, text: "x".repeat(CHAT_MAX_CHARS + 1) },
+      }).success,
+    ).toBe(false);
+    expect(
+      ctlPlaintextSchema.safeParse({ kind: "pin", pin: { ...pin, author: "bad" } }).success,
+    ).toBe(false);
   });
 });
 

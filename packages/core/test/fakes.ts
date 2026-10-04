@@ -94,6 +94,10 @@ interface RoomState {
   ownerSecret: string;
   /** The room includes the AI model (see FakeAi for its endpoints). */
   ai: boolean;
+  /** The member who claimed the room with the creator's secret (RoomDO: the socket's `owner`). */
+  owner: string | null;
+  /** peerIds the creator removed. */
+  banned: Set<string>;
 }
 
 /**
@@ -113,6 +117,8 @@ export class FakeRoomServer {
   pairFilter: ((a: string, b: string) => boolean) | null = null;
   /** Rejections send `rejected` but the close frame never arrives (as seen in wrangler dev). */
   loseRejectCloseFrames = false;
+  /** false = an older server: no `owner` in welcome, and `claim` / `ban` are unknown. */
+  ownerTools = true;
   private clock = 0;
   /** The AI model's endpoints. */
   readonly ai = new FakeAi();
@@ -144,6 +150,8 @@ export class FakeRoomServer {
       joinedAt: new Map(),
       ownerSecret,
       ai: false,
+      owner: null,
+      banned: new Set(),
     };
     this.rooms.set(roomId, room);
     return room;
@@ -325,6 +333,10 @@ export class FakeRoomServer {
       return;
     }
 
+    if (room.banned.has(peerId)) {
+      this.reject(socket, CloseCode.Banned, "banned");
+      return;
+    }
     const existing = room.peers.get(peerId);
     const others = [...room.peers.keys()].filter((id) => id !== peerId);
     if (others.length + 1 > room.maxPeers) {
@@ -336,6 +348,7 @@ export class FakeRoomServer {
       joinedAt = room.joinedAt.get(peerId) ?? joinedAt;
       room.peers.delete(peerId);
       existing.onClientSend = null;
+      if (room.owner === peerId) room.owner = null; // the new socket claims again
       this.send(existing, { v: PROTOCOL_VERSION, t: "replaced" });
       existing.serverClose(CloseCode.Replaced, "replaced");
     }
@@ -354,6 +367,7 @@ export class FakeRoomServer {
       serverNow: this.now() + this.clockSkewMs,
       maxPeers: room.maxPeers,
       peers: others.length + 1,
+      ...(this.ownerTools ? { owner: room.owner } : {}),
       members: others,
       limits: { fileTransfer: room.plan === "super", fileMaxBytes: 2_097_152 },
       ai: room.ai,
@@ -429,10 +443,34 @@ export class FakeRoomServer {
         });
     } else if (msg.t === "leave") {
       this.drop(roomId, peerId, "leave");
+    } else if (!this.ownerTools && msg.t !== "destroy") {
+      this.send(socket, { v: PROTOCOL_VERSION, t: "error", code: "protocol_error", message: "x" });
     } else if (msg.ownerSecret !== room.ownerSecret) {
       this.send(socket, { v: PROTOCOL_VERSION, t: "error", code: "not_owner", message: "x" });
+    } else if (msg.t === "claim") {
+      room.owner = peerId;
+      for (const other of room.peers.values())
+        this.send(other, { v: PROTOCOL_VERSION, t: "owner", peerId });
+    } else if (msg.t === "ban") {
+      this.ban(roomId, peerId, msg.peerId);
     } else {
       this.destroy(roomId, peerId);
+    }
+  }
+
+  /** Mirrors RoomDO's `ban`: out, refused from now on, everyone else told. */
+  private ban(roomId: string, by: string, target: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room || target === by) return;
+    room.banned.add(target);
+    const socket = room.peers.get(target);
+    if (!socket) return;
+    room.peers.delete(target);
+    socket.onClientSend = null;
+    this.send(socket, { v: PROTOCOL_VERSION, t: "banned" });
+    socket.serverClose(CloseCode.Banned, "banned");
+    for (const other of room.peers.values()) {
+      this.send(other, { v: PROTOCOL_VERSION, t: "peer.left", peerId: target, reason: "banned" });
     }
   }
 
@@ -441,6 +479,7 @@ export class FakeRoomServer {
     const room = this.rooms.get(roomId);
     if (!room?.peers.has(peerId)) return;
     room.peers.delete(peerId);
+    if (room.owner === peerId) room.owner = null;
     for (const other of room.peers.values()) {
       this.send(other, { v: PROTOCOL_VERSION, t: "peer.left", peerId, reason });
     }

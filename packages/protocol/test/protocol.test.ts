@@ -211,7 +211,9 @@ describe("server messages", () => {
       serverNow: 1,
       maxPeers: 4,
       limits: { fileTransfer: true, fileMaxBytes: 1 },
-      iceServers: [{ urls: "turns:turn.example:443?transport=tcp", username: "u", credential: "c" }],
+      iceServers: [
+        { urls: "turns:turn.example:443?transport=tcp", username: "u", credential: "c" },
+      ],
     },
     { t: "rejected", code: 4003, reason: "room_full" },
     { t: "error", code: "not_paired", message: "m" },

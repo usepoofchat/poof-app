@@ -1,24 +1,36 @@
 import {
   errorBodySchema,
   payConfigSchema,
+  quoteResponseSchema,
   redeemMessage,
   redeemResponseSchema,
+  variantId,
   type ChainName,
   type Pass,
   type PayConfig,
+  type QuoteResponse,
   type TokenSymbol,
+  type Variant,
 } from "@poof/protocol";
 import { PoofError } from "./errors.ts";
 import { blindedHash, finishPass, type PendingPass } from "./pass.ts";
 
 export {
+  formatEth,
   formatUsd,
   isValidVariant,
   priceMicros,
   purchasableVariants,
   variantId,
 } from "@poof/protocol";
-export type { ChainName, Pass, PayConfig, TokenSymbol, Variant } from "@poof/protocol";
+export type {
+  ChainName,
+  Pass,
+  PayConfig,
+  QuoteResponse,
+  TokenSymbol,
+  Variant,
+} from "@poof/protocol";
 
 /**
  * Paying for a Super Quant-Room, from the browser:
@@ -58,6 +70,30 @@ export function transferData(to: string, micros: number): `0x${string}` {
   return `0xa9059cbb${pad(to.slice(2).toLowerCase())}${pad(micros.toString(16))}`;
 }
 
+/**
+ * ETH only: what to send right now for `variant` on `chain`, at the market price. The payment must
+ * be mined before `expiresAt`; send `quote` back with the redemption.
+ */
+export async function fetchEthQuote(opts: {
+  fetch: typeof fetch;
+  origin: string;
+  chain: ChainName;
+  variant: Variant;
+}): Promise<QuoteResponse> {
+  let res: Response;
+  try {
+    res = await opts.fetch(
+      `${opts.origin}/api/pay/quote?chain=${opts.chain}&variant=${variantId(opts.variant)}`,
+    );
+  } catch {
+    throw new PoofError("connection_failed", "Could not reach the server.");
+  }
+  if (!res.ok) throw serverError(res.status, await res.json().catch(() => null));
+  const parsed = quoteResponseSchema.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) throw new PoofError("connection_failed", "Unexpected server response.");
+  return parsed.data;
+}
+
 /** The text the paying wallet signs: it ties this transaction to this blinded pass. */
 export async function paymentMessage(
   chain: ChainName,
@@ -85,6 +121,8 @@ export async function redeemPayment(opts: {
   pending: PendingPass;
   payer: string;
   signature: string;
+  /** ETH only: the quote from fetchEthQuote. */
+  quote?: string;
 }): Promise<RedeemOutcome> {
   let res: Response;
   try {
@@ -100,6 +138,7 @@ export async function redeemPayment(opts: {
         blindedMsg: opts.pending.blindedMsg,
         payer: opts.payer,
         signature: opts.signature,
+        ...(opts.quote ? { quote: opts.quote } : {}),
       }),
     });
   } catch {

@@ -5,9 +5,11 @@ import {
   priceMicros,
   redeemMessage,
   variantId,
+  weiForUsd,
   type ChainName,
   type Pass,
   type PayConfig,
+  type QuoteResponse,
   type ServerMessage,
   type TokenSymbol,
   type Variant,
@@ -35,12 +37,19 @@ interface FakeTx {
   blockNumber: bigint;
   minedAt: number;
   logs: { address: string; topics: string[]; data: string }[];
+  /** The transaction itself: ETH payments carry their amount as `value`. */
+  from: string;
+  to: string;
+  value: bigint;
 }
 
 class FakeChain {
   txs = new Map<string, FakeTx>();
   head = 1000n;
   down = false;
+  /** Chainlink ETH/USD, 8 decimals: $2,707.23. */
+  ethUsd = 270_723_000_000n;
+  ethUsdUpdatedAt = Date.now();
 
   reader = (): ChainReader => ({
     getReceipt: async (hash) => {
@@ -49,6 +58,17 @@ class FakeChain {
       return tx
         ? { status: tx.status ?? "success", blockNumber: tx.blockNumber, logs: tx.logs }
         : null;
+    },
+    getTransaction: async (hash) => {
+      if (this.down) throw new Error("rpc down");
+      const tx = this.txs.get(hash.toLowerCase());
+      return tx ? { from: tx.from, to: tx.to, value: tx.value } : null;
+    },
+    call: async () => {
+      if (this.down) throw new Error("rpc down");
+      const word = (n: bigint) => n.toString(16).padStart(64, "0");
+      const t = BigInt(Math.floor(this.ethUsdUpdatedAt / 1000));
+      return `0x${word(1n)}${word(this.ethUsd)}${word(t)}${word(t)}${word(1n)}`;
     },
     getBlockNumber: async () => this.head,
     getBlockTimestamp: async (n) => {
@@ -76,6 +96,9 @@ class FakeChain {
     this.head += 10n; // every payment in its own block
     this.txs.set(hash, {
       chain,
+      from: opts.from,
+      to: tokenAddress,
+      value: 0n,
       blockNumber: this.head - BigInt((opts.confirmations ?? 5) - 1),
       minedAt: Date.now() - (opts.ageMs ?? 60_000),
       logs: [
@@ -85,6 +108,22 @@ class FakeChain {
           data: pad(toHex(BigInt(opts.micros))),
         },
       ],
+    });
+    return hash;
+  }
+
+  /** ETH sent straight to `to` (the transaction's own value). */
+  payEth(opts: { from: Hex; wei: bigint; chain?: ChainName; to?: Hex; minedAt?: number }): Hex {
+    const hash = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    this.head += 10n;
+    this.txs.set(hash, {
+      chain: opts.chain ?? "base",
+      from: opts.from,
+      to: opts.to ?? TREASURY,
+      value: opts.wei,
+      blockNumber: this.head - 4n,
+      minedAt: opts.minedAt ?? Date.now() - 60_000,
+      logs: [],
     });
     return hash;
   }
@@ -206,10 +245,16 @@ describe("GET /api/pay/config", () => {
     const cfg = (await res.json()) as PayConfig;
     expect(cfg.treasury).toBe("0x68222E6dC73e161045233B2b76a47d98F84A7e8C");
     expect(cfg.chains.map((c) => [c.name, c.chainId, c.tokens.map((t) => t.symbol)])).toEqual([
-      ["ethereum", 1, ["USDC", "USDT"]],
-      ["base", 8453, ["USDC", "USDT"]],
-      ["robinhood", 4663, ["USDG"]],
+      ["ethereum", 1, ["USDC", "ETH"]],
+      ["base", 8453, ["USDC", "ETH"]],
+      ["robinhood", 4663, ["USDG", "ETH"]],
     ]);
+    // ETH is the chain's own coin: no contract, 18 decimals.
+    expect(cfg.chains[1]!.tokens.find((t) => t.symbol === "ETH")).toEqual({
+      symbol: "ETH",
+      address: null,
+      decimals: 18,
+    });
     // 1 h and 24 h, 2 to 10 people, no AI yet.
     expect(cfg.keys).toHaveLength(18);
     expect(new Set(cfg.keys.map((k) => k.keyId)).size).toBe(18);
@@ -297,7 +342,10 @@ describe("POST /api/pay/redeem", () => {
     const res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet));
     expect(res.status).toBe(402);
     expect(await res.json()).toMatchObject({
-      error: { code: "payment_underpaid", message: "This quant-room costs $0.588; $0.5 arrived." },
+      error: {
+        code: "payment_underpaid",
+        message: "This quant-room costs $0.588 USDC; $0.50 USDC arrived.",
+      },
     });
     expect(await ledger(tx)).toMatchObject({
       required_micros: 588_000,
@@ -546,5 +594,172 @@ describe("POST /api/rooms/:id/upgrade", () => {
       ).status,
     ).toBe(404);
     expect((await post("/api/rooms", { ownerHash: owner.ownerHash, pass })).status).toBe(200);
+  });
+});
+
+describe("paying in ETH", () => {
+  const getQuote = async (chainName: ChainName = "base", variant: Variant = V4) =>
+    (await (
+      await call(`/api/pay/quote?chain=${chainName}&variant=${variantId(variant)}`)
+    ).json()) as QuoteResponse;
+
+  async function ethBody(
+    b: Blinded,
+    tx: Hex,
+    wallet: PrivateKeyAccount,
+    quote: string | undefined,
+    chainName: ChainName = "base",
+  ) {
+    return { ...(await redeemBody(b, tx, wallet, chainName, "ETH")), ...(quote ? { quote } : {}) };
+  }
+
+  it("quotes the site's dollar price in ETH at the Chainlink price, held 15 minutes", async () => {
+    const q = await getQuote();
+    expect(q).toMatchObject({
+      chain: "base",
+      variant: "3600-4",
+      usdMicros: 588_000,
+      ethUsd: "270723000000",
+    });
+    expect(BigInt(q.wei)).toBe(weiForUsd(588_000, chain.ethUsd));
+    // $0.588 / $2,707.23 ≈ 0.0002172 ETH, rounded up to a whole gwei.
+    expect(Number(q.wei) / 1e18).toBeCloseTo(0.588 / 2707.23, 8);
+    expect(BigInt(q.wei) % 10n ** 9n).toBe(0n);
+    expect(q.expiresAt - Date.now()).toBeGreaterThan(14 * 60 * 1000);
+    expect(q.expiresAt - Date.now()).toBeLessThanOrEqual(15 * 60 * 1000);
+  });
+
+  it("the quoted ETH opens the room, and the ledger has the ETH and dollar amounts and the price used", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const b = await blind(V4);
+    const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei) });
+    const res = await post("/api/pay/redeem", await ethBody(b, tx, wallet, q.quote));
+    expect(res.status).toBe(200);
+    const pass = await finish(b, ((await res.json()) as { blindSignature: string }).blindSignature);
+    expect(
+      (await post("/api/rooms", { ownerHash: (await newOwner()).ownerHash, pass })).status,
+    ).toBe(200);
+    const row = await ledger(tx);
+    expect(row).toMatchObject({
+      token: "ETH",
+      required_micros: 588_000,
+      required_units: q.wei,
+      received_units: q.wei,
+      eth_usd: "270723000000",
+      status: "issued",
+    });
+    expect(row!.received_micros as number).toBeGreaterThanOrEqual(588_000);
+  });
+
+  it("too little ETH: refused, and recorded in ETH and dollars", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei) / 2n });
+    const res = await post("/api/pay/redeem", await ethBody(await blind(V4), tx, wallet, q.quote));
+    expect(res.status).toBe(402);
+    expect(await res.json()).toMatchObject({
+      error: {
+        code: "payment_underpaid",
+        message: expect.stringMatching(
+          /^This quant-room costs 0\.000218 ETH; 0\.000109 ETH arrived\.$/,
+        ),
+      },
+    });
+    expect(await ledger(tx)).toMatchObject({ status: "underpaid", required_units: q.wei });
+  });
+
+  it("needs its own quote, untouched, for this chain and quant-room", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei) });
+    const [payload, mac] = q.quote.split(".");
+    const forged = JSON.parse(new TextDecoder().decode(fromBase64Url(payload!))) as { w: string };
+    forged.w = "1";
+    const tampered = `${toBase64Url(new TextEncoder().encode(JSON.stringify(forged)))}.${mac}`;
+    for (const quote of [
+      undefined,
+      tampered,
+      (await getQuote("base", { lifetime: 3600, people: 2, ai: false })).quote,
+      (await getQuote("ethereum")).quote,
+    ]) {
+      const res = await post("/api/pay/redeem", await ethBody(await blind(V4), tx, wallet, quote));
+      expect(res.status).toBe(422);
+    }
+    expect(await ledger(tx)).toBeNull();
+  });
+
+  it("ETH that arrives after the quote ran out is recorded as late, not accepted", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const tx = chain.payEth({
+      from: wallet.address,
+      wei: BigInt(q.wei),
+      minedAt: q.expiresAt + 30_000,
+    });
+    const res = await post("/api/pay/redeem", await ethBody(await blind(V4), tx, wallet, q.quote));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      error: { message: expect.stringContaining("after its ETH price ran out") },
+    });
+    expect(await ledger(tx)).toMatchObject({ status: "late", received_units: q.wei });
+  });
+
+  it("ETH sent elsewhere, or from another wallet than the one that signs, doesn't count", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const other = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const elsewhere = chain.payEth({
+      from: wallet.address,
+      wei: BigInt(q.wei),
+      to: "0x000000000000000000000000000000000000dEaD",
+    });
+    expect(
+      (await post("/api/pay/redeem", await ethBody(await blind(V4), elsewhere, wallet, q.quote)))
+        .status,
+    ).toBe(422);
+    const fromOther = chain.payEth({ from: other.address, wei: BigInt(q.wei) });
+    const res = await post(
+      "/api/pay/redeem",
+      await ethBody(await blind(V4), fromOther, wallet, q.quote),
+    );
+    expect(await res.json()).toMatchObject({
+      error: { code: "payment_invalid", message: expect.stringContaining("another wallet") },
+    });
+  });
+
+  it("works on Ethereum and Robinhood Chain too", async () => {
+    for (const chainName of ["ethereum", "robinhood"] as const) {
+      const wallet = privateKeyToAccount(generatePrivateKey());
+      const q = await getQuote(chainName);
+      expect(q.chain).toBe(chainName);
+      const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei), chain: chainName });
+      expect(
+        (
+          await post(
+            "/api/pay/redeem",
+            await ethBody(await blind(V4), tx, wallet, q.quote, chainName),
+          )
+        ).status,
+      ).toBe(200);
+    }
+  });
+
+  it("no fresh ETH price: no quote (503)", async () => {
+    chain.ethUsdUpdatedAt = Date.now() - 3 * 60 * 60 * 1000;
+    const res = await call("/api/pay/quote?chain=base&variant=3600-4");
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: { code: "chain_unavailable" } });
+  });
+
+  it("refuses odd quote requests", async () => {
+    for (const qs of [
+      "chain=solana&variant=3600-4",
+      "chain=base&variant=3600-11",
+      "chain=base&variant=3600-4-ai",
+      "variant=3600-4",
+    ]) {
+      expect((await call(`/api/pay/quote?${qs}`)).status).toBe(400);
+    }
   });
 });

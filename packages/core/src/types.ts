@@ -154,4 +154,6 @@ export interface SessionState {
   log: LogEntry[];
   /** Set after createPhrase(). */
   phrase: { code: string; expiresAt: number } | null;
+  /** peerIds of the people typing right now (cleared by their next message, "off", or after a few seconds). */
+  typing: string[];
 }

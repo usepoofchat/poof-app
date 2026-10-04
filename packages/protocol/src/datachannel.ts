@@ -87,6 +87,11 @@ export const ctlPlaintextSchema = z.discriminatedUnion("kind", [
    * that shows different people to different members (split view).
    */
   z.object({ kind: z.literal("members"), peerIds: z.array(peerIdSchema).max(MAX_ROOM_PEERS) }),
+  /**
+   * The sender is typing (on) or stopped (off). A hint for the UI only: never stored, and it carries
+   * no text. Older clients drop unknown control kinds, so they simply never show it.
+   */
+  z.object({ kind: z.literal("typing"), on: z.boolean() }),
 ]);
 export type CtlPlaintext = z.infer<typeof ctlPlaintextSchema>;
 

@@ -76,6 +76,7 @@ function staticState(
     messages: [],
     log: [],
     phrase: null,
+    typing: [],
   };
 }
 

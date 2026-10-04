@@ -82,7 +82,7 @@ The tests check these limits, mostly in `worker/test/limits.test.ts`. The parser
 
 ```bash
 pnpm --filter @poof/worker exec wrangler dev --port 8799
-pnpm --filter @poof/e2e run load -- --url http://localhost:8799 --rooms 1000 --concurrency 100 --signals 150
+pnpm --filter @poof/e2e run load --url http://localhost:8799 --rooms 1000 --concurrency 100 --signals 150
 ```
 
 Against a deployed Worker, Cloudflare sets the client IP itself. From one machine, the rate limits cap the test at 5 new rooms a minute.

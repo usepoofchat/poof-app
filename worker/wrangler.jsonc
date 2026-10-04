@@ -25,7 +25,7 @@
     {
       "binding": "LEDGER",
       "database_name": "poof-ledger",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "f41ad1b5-cd04-460c-b2b7-7f7657b72498",
       "migrations_dir": "migrations",
     },
   ],

@@ -529,13 +529,21 @@ describe("zombie sockets", () => {
 });
 
 describe("ending the session", () => {
-  it("peer closes abruptly: terminated, conversation wiped, link closed", async () => {
+  it("peer closes abruptly and never comes back: terminated after the rejoin grace, conversation wiped, link closed", async () => {
     const w = world();
-    const { alice, bob } = await connectPair(w);
+    const alice = w.make(ALICE);
+    const bob = w.make(BOB, { rejoinGraceMs: 80 });
+    await alice.start();
+    await until(alice, "waiting");
+    await bob.start();
+    await until(bob, "sealed");
     await alice.sendMessage("private");
     await waitFor(() => texts(bob).length === 1, "message");
 
     w.server.drop(ROOM, ALICE, "closed"); // alice's socket vanished
+    await until(bob, "waiting");
+    expect(bob.getState()).toMatchObject({ peerAway: true, peerPresent: false });
+    expect(texts(bob)).toEqual(["private"]); // kept while she may come back
     await until(bob, "terminated");
     expect(bob.getState()).toMatchObject({
       endReason: "peer_left",

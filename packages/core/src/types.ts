@@ -35,6 +35,8 @@ export type EndReason =
   | "left_by_me"
   | "connection_lost"
   | "replaced"
+  /** This page called `suspend()` (it's reloading). Nobody was told you left. */
+  | "suspended"
   /** The creator removed you. */
   | "banned";
 
@@ -176,6 +178,11 @@ export interface SessionState {
   isOwner: boolean;
   role: "initiator" | "responder" | null;
   peerPresent: boolean;
+  /**
+   * 2-person rooms: the other person dropped without leaving (e.g. they reloaded the page). The
+   * conversation is kept while the room waits a little for them to come back (status "waiting").
+   */
+  peerAway: boolean;
   connectionType: ConnectionType | null;
   /** 2 for free rooms, up to 10 for super rooms. Group behaviour applies when > 2. */
   maxPeers: number;

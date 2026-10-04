@@ -64,6 +64,7 @@ function staticState(
     isOwner,
     role: null,
     peerPresent: false,
+    peerAway: false,
     connectionType: null,
     maxPeers: 2,
     members: [],

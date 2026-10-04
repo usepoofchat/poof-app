@@ -6,7 +6,7 @@ Below, `RUN_ID` is the number of a run of the Deploy workflow on GitHub, and `CO
 
 ## How a release is made
 
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on GitHub when someone with write access starts it:
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on GitHub on every push to `main` (or when someone with write access starts it):
 
 1. The tests run ([`ci.yml`](.github/workflows/ci.yml)), including a check that bundling the API twice gives identical bytes.
 2. The API is bundled, and `worker-checksums.sha256` is written for the bundle.

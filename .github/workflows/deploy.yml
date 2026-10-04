@@ -3,9 +3,9 @@ name: Deploy
 # Deploys the API only (api.usepoof.chat). The web app at https://usepoof.chat is hosted
 # separately and is never touched from here.
 #
-# Started by hand only (Actions → Deploy → Run workflow, from main): a push to main runs the checks
-# (ci.yml) and nothing else. Every release is built here: bundle → checksum → GitHub attestation →
-# deploy those exact bytes → check that the live API reports this commit. See VERIFICATION.md.
+# Runs on every push to main (and by hand: Actions → Deploy → Run workflow, from main). Every release
+# is built here: checks (ci.yml) → bundle → checksum → GitHub attestation → deploy those exact
+# bytes → check that the live API reports this commit. See VERIFICATION.md.
 #
 # The GitHub environment "production" needs:
 #   secrets  DEPLOY_TOKEN, DEPLOY_ACCOUNT_ID
@@ -14,6 +14,8 @@ name: Deploy
 # TURN secrets are set on the deployed API, not here.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

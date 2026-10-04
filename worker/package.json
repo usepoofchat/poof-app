@@ -15,7 +15,9 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@cloudflare/blindrsa-ts": "^0.4.6",
     "@poof/protocol": "workspace:*",
+    "viem": "^2.57.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {

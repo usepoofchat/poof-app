@@ -50,6 +50,8 @@ export interface RtcPeerConnectionLike {
     usernameFragment?: string | null;
   }): Promise<void>;
   getStats(): Promise<RtcStatsLike>;
+  /** Replace the ICE servers (e.g. fresh relay credentials). Optional so test fakes can skip it. */
+  setConfiguration?(config: { iceServers: IceServer[] }): void;
   close(): void;
 }
 
@@ -242,7 +244,21 @@ export class PeerLink {
     }
   }
 
-  /** Restart ICE (initiator re-offers with iceRestart). Not used yet: a broken link ends the session. */
+  /**
+   * Swap in new ICE servers (the relay credentials of an upgraded room) and, on the initiator,
+   * restart ICE so a relayed path is rebuilt with them before the old ones expire.
+   */
+  async refreshIceServers(iceServers: IceServer[], restart: boolean): Promise<void> {
+    if (this.closed) return;
+    try {
+      this.pc.setConfiguration?.({ iceServers });
+      if (restart) await this.restartIce();
+    } catch {
+      // Keep the current path: at worst it ends when the old credentials do.
+    }
+  }
+
+  /** Restart ICE (initiator re-offers with iceRestart). */
   async restartIce(): Promise<void> {
     if (this.closed || this.opts.role !== "initiator") return;
     const offer = await this.pc.createOffer({ iceRestart: true });

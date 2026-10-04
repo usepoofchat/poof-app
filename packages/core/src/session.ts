@@ -7,6 +7,7 @@ import {
   type CtlPlaintext,
   type IceServer,
   type Limits,
+  type Pass,
   type PeerRole,
   type RoomInfo,
   type ServerMessage,
@@ -17,6 +18,7 @@ import { PoofError } from "./errors.ts";
 import { hashFile, type IncomingFileInfo, type OutgoingFile, type SendResult } from "./files.ts";
 import { MemberLink, type MemberFailure } from "./member.ts";
 import type { RtcFactory } from "./peer.ts";
+import { serverError } from "./pay.ts";
 import { createPhraseInvite } from "./phrase.ts";
 import { SignalingClient, type SocketFactory } from "./signaling.ts";
 import { normalizeChatText, normalizeNickname, sanitizeFileName, sanitizeMime } from "./text.ts";
@@ -349,6 +351,35 @@ export class RoomSession {
     return Promise.resolve();
   }
 
+  /**
+   * Creator only: turn this room into the pass's Super Quant-Room (more time, more people, files).
+   * Everyone in the room is told by the server (`room.upgraded`); this resolves once it's done.
+   */
+  async upgrade(pass: Pass): Promise<void> {
+    const { ownerSecret } = this.deps;
+    if (ownerSecret === undefined) {
+      throw new PoofError("not_owner", "Only the person who created the room can upgrade it.");
+    }
+    if (TERMINAL.has(this.state.status))
+      throw new PoofError("room_not_found", "The room has ended.");
+    let res: Response;
+    try {
+      res = await this.deps.fetch(`${this.deps.origin}/api/rooms/${this.deps.roomId}/upgrade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ownerSecret, pass }),
+      });
+    } catch {
+      throw new PoofError("connection_failed", "Could not reach the server.");
+    }
+    if (!res.ok) throw serverError(res.status, await res.json().catch(() => null));
+    const info = roomInfoSchema.safeParse(await res.json().catch(() => null));
+    if (info.success && !TERMINAL.has(this.state.status)) {
+      this.applyRoomMeta(info.data);
+      this.scheduleExpiryCheck();
+    }
+  }
+
   /** Leave this room (the others are told). Call on unmount. */
   async leave(): Promise<void> {
     if (TERMINAL.has(this.state.status)) {
@@ -462,6 +493,8 @@ export class RoomSession {
       case "room.upgraded":
         this.applyRoomMeta(msg);
         this.scheduleExpiryCheck();
+        // The old relay credentials end with the old deadline: relayed links rebuild with new ones.
+        for (const link of this.links.values()) void link.refreshIceServers(msg.iceServers);
         return;
       case "rejected":
         // The close frame that follows can get lost; the message is enough.

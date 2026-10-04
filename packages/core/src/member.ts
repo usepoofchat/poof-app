@@ -138,6 +138,11 @@ export class MemberLink {
     if (this.live) void this.link.handleSignal(payload);
   }
 
+  /** New ICE servers for this link; a relayed link restarts ICE with them (initiator side). */
+  refreshIceServers(iceServers: IceServer[]): Promise<void> {
+    return this.link.refreshIceServers(iceServers, this.connectionType === "relay");
+  }
+
   /** Encrypt and send one frame on the ctl channel. Throws PoofError("not_connected"). */
   send(type: FrameTypeId, plaintext: Uint8Array): Promise<void> {
     return this.sendOn("ctl", type, plaintext);

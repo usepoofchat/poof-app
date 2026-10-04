@@ -1,8 +1,9 @@
-import { createRoomResponseSchema, type CreateRoomResponse } from "@poof/protocol";
+import { createRoomResponseSchema, type CreateRoomResponse, type Pass } from "@poof/protocol";
 import { decodeRoomKey, encodeRoomKey, generateRoomKey } from "./crypto/keys.ts";
 import { sha256 } from "./crypto/primitives.ts";
 import { randomBytes, toBase64Url, type Bytes } from "./encoding.ts";
 import { PoofError } from "./errors.ts";
+import { serverError } from "./pay.ts";
 
 export interface CreatedRoom {
   roomId: string;
@@ -25,6 +26,8 @@ export async function createRoom(opts: {
   fetch: typeof fetch;
   /** Origin of the API, e.g. "https://api.usepoof.chat". "" means same origin. */
   origin?: string;
+  /** A paid pass: the room is a Super Quant-Room of the pass's kind. Spent on success. */
+  pass?: Pass;
 }): Promise<CreatedRoom> {
   const secret = randomBytes(32);
   const ownerHash = toBase64Url(await sha256(secret));
@@ -33,14 +36,14 @@ export async function createRoom(opts: {
     res = await opts.fetch(`${opts.origin ?? ""}/api/rooms`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ownerHash }),
+      body: JSON.stringify(opts.pass ? { ownerHash, pass: opts.pass } : { ownerHash }),
     });
   } catch {
     throw new PoofError("connection_failed", "Could not reach the server.");
   }
   if (res.status === 429)
     throw new PoofError("rate_limited", "Too many rooms created. Try again soon.");
-  if (!res.ok) throw new PoofError("connection_failed", `Server error ${res.status}.`);
+  if (!res.ok) throw serverError(res.status, await res.json().catch(() => null));
 
   const parsed = createRoomResponseSchema.safeParse(await res.json().catch(() => null));
   if (!parsed.success) throw new PoofError("connection_failed", "Unexpected server response.");

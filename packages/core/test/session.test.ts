@@ -803,12 +803,15 @@ describe("room.upgraded", () => {
           tier: "60m",
           expiresAt: newDeadline,
           serverNow: Date.now(),
+          maxPeers: 4,
           limits: { fileTransfer: true, fileMaxBytes: 2_097_152 },
+          iceServers: [{ urls: "stun:stun.test:3478" }],
         }),
       );
     expect(alice.getState()).toMatchObject({
       plan: "super",
       tier: "60m",
+      maxPeers: 4,
       limits: { fileTransfer: true, fileMaxBytes: 2_097_152 },
     });
     expect(Math.abs(alice.getState().expiresAt! - newDeadline)).toBeLessThan(100);

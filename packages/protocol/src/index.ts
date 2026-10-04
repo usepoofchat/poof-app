@@ -6,3 +6,4 @@ export * from "./ids.ts";
 export * from "./http.ts";
 export * from "./ws.ts";
 export * from "./datachannel.ts";
+export * from "./pay.ts";

@@ -159,6 +159,8 @@ export class FakeRoomServer {
       const handshake = /\/api\/handshakes\/([^/]+)(\/take)?$/.exec(new URL(url).pathname);
       if (handshake)
         return Promise.resolve(this.mailbox(handshake[1] ?? "", Boolean(handshake[2]), init));
+      const upgrade = /\/api\/rooms\/([^/]+)\/upgrade$/.exec(new URL(url).pathname);
+      if (upgrade) return Promise.resolve(this.upgrade(upgrade[1] ?? "", init));
       if (this.nextRoomResponse) {
         const make = this.nextRoomResponse;
         this.nextRoomResponse = null;
@@ -183,6 +185,77 @@ export class FakeRoomServer {
       };
       return Promise.resolve(Response.json(info));
     };
+  }
+
+  /** Relay credentials the fake hands out on upgrade. */
+  upgradeIceServers: IceServer[] = [
+    { urls: "turns:turn.test:443?transport=tcp", username: "u2", credential: "c2" },
+  ];
+
+  /**
+   * POST /api/rooms/:id/upgrade: the fake accepts any pass whose `msg` isn't "spent" (the real
+   * server checks the blind signature) and mirrors RoomDO.upgrade.
+   */
+  readonly spentPasses = new Set<string>();
+  private upgrade(roomId: string, init: RequestInit | undefined): Response {
+    const room = this.rooms.get(roomId);
+    const { ownerSecret, pass } = JSON.parse(init?.body as string) as {
+      ownerSecret: string;
+      pass: { msg: string; variant: { lifetime: number; people: number } };
+    };
+    if (!room || this.now() >= room.expiresAt) {
+      return Response.json(
+        { error: { code: "room_not_found", message: "Room not found." } },
+        { status: 404 },
+      );
+    }
+    if (this.spentPasses.has(pass.msg)) {
+      return Response.json(
+        { error: { code: "pass_used", message: "That pass has already been used." } },
+        { status: 409 },
+      );
+    }
+    if (ownerSecret !== room.ownerSecret) {
+      return Response.json(
+        {
+          error: {
+            code: "not_owner",
+            message: "Only the person who created the room can upgrade it.",
+          },
+        },
+        { status: 403 },
+      );
+    }
+    this.spentPasses.add(pass.msg);
+    room.plan = "super";
+    room.tier = pass.variant.lifetime === 86400 ? "24h" : "60m";
+    room.expiresAt = this.now() + pass.variant.lifetime * 1000;
+    room.maxPeers = Math.max(room.maxPeers, pass.variant.people);
+    const limits = { fileTransfer: true, fileMaxBytes: 2_097_152 };
+    for (const socket of room.peers.values()) {
+      this.send(socket, {
+        v: PROTOCOL_VERSION,
+        t: "room.upgraded",
+        plan: room.plan,
+        tier: room.tier,
+        expiresAt: room.expiresAt + this.clockSkewMs,
+        serverNow: this.now() + this.clockSkewMs,
+        maxPeers: room.maxPeers,
+        limits,
+        iceServers: this.upgradeIceServers,
+      });
+    }
+    const info: RoomInfo = {
+      roomId,
+      expiresAt: room.expiresAt + this.clockSkewMs,
+      serverNow: this.now() + this.clockSkewMs,
+      plan: room.plan,
+      tier: room.tier,
+      maxPeers: room.maxPeers,
+      limits,
+      peers: room.peers.size,
+    };
+    return Response.json(info);
   }
 
   private mailbox(id: string, take: boolean, init: RequestInit | undefined): Response {
@@ -469,6 +542,10 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
   ondatachannel: ((event: { channel: RtcDataChannelLike }) => void) | null = null;
   readonly channels: FakeDataChannel[] = [];
   readonly addedCandidates: string[] = [];
+  /** ICE servers passed to setConfiguration, in order. */
+  readonly configurations: IceServer[][] = [];
+  /** Offers made with iceRestart. */
+  restarts = 0;
   closed = false;
   private peer: FakePeerConnection | null = null;
 
@@ -484,7 +561,12 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
     return channel;
   }
 
+  setConfiguration(config: { iceServers: IceServer[] }): void {
+    this.configurations.push(config.iceServers);
+  }
+
   createOffer(options?: { iceRestart?: boolean }): Promise<{ type: string; sdp?: string }> {
+    if (options?.iceRestart) this.restarts += 1;
     return Promise.resolve({
       type: "offer",
       sdp: `fake-offer:${this.id}${options?.iceRestart ? ":restart" : ""}`,
@@ -571,6 +653,8 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
 
   /** Make this connection (the answerer) and `offerer` talk to each other. */
   private connect(offerer: FakePeerConnection): void {
+    // An ICE restart renegotiates an existing connection: the channels stay as they are.
+    if (this.peer === offerer && this.connectionState === "connected") return;
     this.peer = offerer;
     offerer.peer = this;
     if (this.net.holdNegotiation) return;

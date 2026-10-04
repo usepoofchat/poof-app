@@ -20,7 +20,13 @@ export type PoofErrorCode =
   /** Phrase join: not four words from the list. */
   | "invalid_code"
   /** Phrase join: the code was already used or has expired (mailboxes are one-time, 3 min). */
-  | "not_found_or_expired";
+  | "not_found_or_expired"
+  /** Super Quant-Rooms can't be bought right now (no key for this variant, or payments are off). */
+  | "pay_unavailable"
+  /** The payment wasn't found, isn't confirmed yet, or doesn't match (see the message). */
+  | "pay_failed"
+  /** The pass was refused: already spent, or not valid. */
+  | "pass_invalid";
 
 /** Error with a stable machine-readable `code`; UI maps codes to copy, never `message`. */
 export class PoofError extends Error {

@@ -101,7 +101,13 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
     tier: tierSchema,
     expiresAt: z.number().int(),
     serverNow: z.number().int(),
+    maxPeers: z.number().int().positive().max(MAX_ROOM_PEERS),
     limits: limitsSchema,
+    /**
+     * Fresh relay credentials that last until the new end of the room. Links that go through the
+     * relay restart ICE with them, since the old ones expire at the old end.
+     */
+    iceServers: z.array(iceServerSchema).max(MAX_ICE_SERVERS),
   }),
   /**
    * Sent right before the server closes a socket it won't admit (room_full, room_not_found,

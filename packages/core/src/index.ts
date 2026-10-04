@@ -12,4 +12,6 @@ export * from "./files.ts";
 export * from "./member.ts";
 export * from "./session.ts";
 export * from "./phrase.ts";
+export * from "./pass.ts";
+export * from "./pay.ts";
 export * from "./support.ts";

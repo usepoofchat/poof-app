@@ -16,9 +16,10 @@
     "format": "prettier --write .",
     "test:e2e": "pnpm --filter @poof/e2e run test",
     "test:browser": "pnpm --filter @poof/e2e run test:browser",
-    "typecheck:web": "tsc -p tsconfig.json",
+    "typecheck:web": "tsc -p tsconfig.json && tsc -p scripts/tsconfig.json",
     "lint:web": "eslint .",
-    "test:web": "vitest run"
+    "test:web": "vitest run",
+    "check:prices": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-prices.ts"
   },
   "devDependencies": {
     "@poof/tooling": "workspace:*",

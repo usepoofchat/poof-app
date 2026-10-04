@@ -8,7 +8,10 @@ import {
   createRoomRequestSchema,
   isRoomId,
   putHandshakeRequestSchema,
+  upgradeRoomRequestSchema,
   type CreateRoomResponse,
+  type Tier,
+  type Variant,
 } from "@poof/protocol";
 import {
   apiError,
@@ -21,6 +24,7 @@ import {
   rejectedSocket,
   withCors,
 } from "./http.ts";
+import { payConfig, redeem, spendPass, unspendPass } from "./pay.ts";
 import { positiveInt, randomId } from "./util.ts";
 
 export { RoomDO } from "./room-do.ts";
@@ -95,6 +99,21 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return createRoom(request, env);
   }
 
+  if (path === "/api/pay/config") {
+    if (method !== "GET") return methodNotAllowed();
+    return payConfig(env);
+  }
+  if (path === "/api/pay/redeem") {
+    if (method !== "POST") return methodNotAllowed();
+    return redeem(request, env);
+  }
+
+  const upgrade = /^\/api\/rooms\/([^/]+)\/upgrade$/.exec(path);
+  if (upgrade) {
+    if (method !== "POST") return methodNotAllowed();
+    return upgradeRoom(request, env, upgrade[1]);
+  }
+
   const room = /^\/api\/rooms\/([^/]+)$/.exec(path);
   if (room) {
     if (method !== "GET") return methodNotAllowed();
@@ -127,7 +146,9 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
   const body = await readJson(request, MAX_JSON_BODY_BYTES);
   if (body instanceof Response) return body;
   const parsed = createRoomRequestSchema.safeParse(body.value);
-  if (!parsed.success) return apiError("invalid_request", "Expected { ownerHash }.", 400);
+  if (!parsed.success) return apiError("invalid_request", "Expected { ownerHash, pass? }.", 400);
+
+  if (parsed.data.pass) return createSuperRoom(env, parsed.data.ownerHash, parsed.data.pass);
 
   const roomId = randomId();
   const ttlSeconds = positiveInt(env.ROOM_TTL_FREE_SECONDS, TIER_TTL_SECONDS.free);
@@ -150,6 +171,69 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
 
   const { peers: _peers, ...created } = info;
   return json(created satisfies CreateRoomResponse);
+}
+
+const tierFor = (v: Variant): Tier => (v.lifetime === TIER_TTL_SECONDS["24h"] ? "24h" : "60m");
+
+/** A Super Quant-Room, paid with a pass. The pass is burned first and given back if creation fails. */
+async function createSuperRoom(env: Env, ownerHash: string, pass: unknown): Promise<Response> {
+  const spent = await spendPass(env, pass);
+  if (!spent.ok) return spent.response;
+  const { variant } = spent;
+  const roomId = randomId();
+  const info = await env.ROOM.getByName(roomId)
+    .create({
+      roomId,
+      ttlSeconds: variant.lifetime,
+      plan: "super",
+      tier: tierFor(variant),
+      maxPeers: variant.people,
+      ownerHash,
+    })
+    .catch(() => null);
+  if (!info) {
+    await unspendPass(env, spent.msgHash);
+    return apiError("internal_error", "Could not create room.", 500);
+  }
+  const { peers: _peers, ...created } = info;
+  return json(created satisfies CreateRoomResponse);
+}
+
+/** POST /api/rooms/:id/upgrade { ownerSecret, pass } */
+async function upgradeRoom(
+  request: Request,
+  env: Env,
+  roomId: string | undefined,
+): Promise<Response> {
+  if (!isRoomId(roomId)) return apiError("room_not_found", "Room not found.", 404);
+  if (await isRateLimited(env.RL_ROOM_READ, request)) {
+    return apiError("rate_limited", "Rate limit exceeded. Try again later.", 429);
+  }
+  const body = await readJson(request, MAX_JSON_BODY_BYTES);
+  if (body instanceof Response) return body;
+  const parsed = upgradeRoomRequestSchema.safeParse(body.value);
+  if (!parsed.success) return apiError("invalid_request", "Expected { ownerSecret, pass }.", 400);
+
+  const spent = await spendPass(env, parsed.data.pass);
+  if (!spent.ok) return spent.response;
+  const { variant } = spent;
+  const result = await env.ROOM.getByName(roomId)
+    .upgrade({
+      ownerSecret: parsed.data.ownerSecret,
+      tier: tierFor(variant),
+      lifetimeSeconds: variant.lifetime,
+      maxPeers: variant.people,
+    })
+    .catch(() => null);
+  if (!result?.ok) {
+    await unspendPass(env, spent.msgHash);
+    if (result?.reason === "not_owner")
+      return apiError("not_owner", "Only the person who created the room can upgrade it.", 403);
+    if (result?.reason === "room_not_found")
+      return apiError("room_not_found", "Room not found.", 404);
+    return apiError("internal_error", "Could not upgrade the room.", 500);
+  }
+  return json(result.info);
 }
 
 async function getRoom(request: Request, env: Env, roomId: string | undefined): Promise<Response> {

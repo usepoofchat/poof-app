@@ -117,6 +117,53 @@ export class RoomDO extends DurableObject<Env> {
     return this.toInfo(meta, now);
   }
 
+  /**
+   * Super Quant-Room upgrade, paid with a pass (checked by the Worker). Only the creator can do it.
+   * The room gets the pass's lifetime from now, its number of people (never fewer than it has) and
+   * file sharing. Everyone in it hears about it right away, with relay credentials for the new end.
+   */
+  async upgrade(opts: {
+    ownerSecret: string;
+    tier: Tier;
+    lifetimeSeconds: number;
+    maxPeers: number;
+  }): Promise<
+    { ok: true; info: RoomInfo } | { ok: false; reason: "room_not_found" | "not_owner" }
+  > {
+    const meta = this.live();
+    if (!meta) return { ok: false, reason: "room_not_found" };
+    if (!(await ownerSecretMatches(opts.ownerSecret, meta.ownerHash)))
+      return { ok: false, reason: "not_owner" };
+    const now = Date.now();
+    const next: RoomMeta = {
+      ...meta,
+      plan: "super",
+      tier: opts.tier,
+      expiresAt: now + opts.lifetimeSeconds * 1000,
+      maxPeers: Math.max(meta.maxPeers, opts.maxPeers),
+      upgradedAt: now,
+    };
+    await this.ctx.storage.put(META_KEY, next);
+    this.meta = next;
+    await this.ctx.storage.setAlarm(next.expiresAt);
+    const iceServers = await mintIceServers(this.env, turnCredentialTtl(next.expiresAt));
+    const info = this.toInfo(next, Date.now());
+    for (const ws of this.activeSockets()) {
+      this.send(ws, {
+        v: PROTOCOL_VERSION,
+        t: "room.upgraded",
+        plan: next.plan,
+        tier: next.tier,
+        expiresAt: next.expiresAt,
+        serverNow: info.serverNow,
+        maxPeers: next.maxPeers,
+        limits: info.limits,
+        iceServers,
+      });
+    }
+    return { ok: true, info };
+  }
+
   /** Public room info, or null if the room doesn't exist or has expired. */
   getInfo(): RoomInfo | null {
     const meta = this.live();

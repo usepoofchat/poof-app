@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@cloudflare/blindrsa-ts": "^0.4.6",
     "@noble/post-quantum": "^0.7.1",
     "@poof/protocol": "workspace:*",
     "@scure/bip39": "^2.4.0"

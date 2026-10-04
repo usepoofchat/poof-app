@@ -5,7 +5,8 @@ import {
   MAX_ROOM_PEERS,
   TIERS,
 } from "./constants.ts";
-import { ownerHashSchema, roomIdSchema } from "./ids.ts";
+import { ownerHashSchema, ownerSecretSchema, roomIdSchema } from "./ids.ts";
+import { passSchema } from "./pay.ts";
 
 export const planSchema = z.enum(["free", "super"]);
 export type Plan = z.infer<typeof planSchema>;
@@ -31,6 +32,16 @@ export const errorCodeSchema = z.enum([
   "method_not_allowed",
   "not_found",
   "internal_error",
+  // Super Quant-Rooms
+  "pay_unavailable",
+  "chain_unavailable",
+  "payment_invalid",
+  "payment_underpaid",
+  "payment_used",
+  "key_changed",
+  "pass_invalid",
+  "pass_used",
+  "not_owner",
 ]);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 
@@ -39,8 +50,11 @@ export const errorBodySchema = z.object({
 });
 export type ErrorBody = z.infer<typeof errorBodySchema>;
 
-/** POST /api/rooms */
-export const createRoomRequestSchema = z.object({ ownerHash: ownerHashSchema });
+/** POST /api/rooms. With a pass, the room is a Super Quant-Room of the pass's variant. */
+export const createRoomRequestSchema = z.object({
+  ownerHash: ownerHashSchema,
+  pass: passSchema.optional(),
+});
 export type CreateRoomRequest = z.infer<typeof createRoomRequestSchema>;
 
 export const createRoomResponseSchema = z.object({
@@ -53,6 +67,13 @@ export const createRoomResponseSchema = z.object({
   limits: limitsSchema,
 });
 export type CreateRoomResponse = z.infer<typeof createRoomResponseSchema>;
+
+/** POST /api/rooms/:id/upgrade: the creator turns the room into the pass's Super Quant-Room. */
+export const upgradeRoomRequestSchema = z.object({
+  ownerSecret: ownerSecretSchema,
+  pass: passSchema,
+});
+export type UpgradeRoomRequest = z.infer<typeof upgradeRoomRequestSchema>;
 
 /** GET /api/rooms/:id */
 export const roomInfoSchema = createRoomResponseSchema.extend({

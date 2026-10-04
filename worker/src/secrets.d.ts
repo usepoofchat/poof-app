@@ -6,4 +6,9 @@ interface Env {
   TURN_KEY_ID?: string;
   /** Cloudflare TURN API token. */
   TURN_API_TOKEN?: string;
+  /**
+   * 32+ random bytes, base64url. Seals the pass signing keys stored in D1. Without it (or without
+   * PAY_TREASURY) Super Quant-Rooms can't be bought.
+   */
+  PASS_MASTER_KEY?: string;
 }

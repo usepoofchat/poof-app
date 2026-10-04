@@ -5,7 +5,7 @@
 //
 // Against `wrangler dev` each simulated person sends its own CF-Connecting-IP, so the per-IP rate
 // limits don't cap the run. A deployed Worker gets no such header (Cloudflare refuses requests that
-// set it): from one machine, staging allows 5 new rooms and 10 joins per minute. See SECURITY.md.
+// set it): from one machine, a deployed Worker allows 5 new rooms and 10 joins per minute. See SECURITY.md.
 import { parseArgs } from "node:util";
 import {
   PROTOCOL_VERSION,

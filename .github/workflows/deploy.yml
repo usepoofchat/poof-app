@@ -1,29 +1,23 @@
 name: Deploy
 
-# Deploys the API Worker only (api.usepoof.chat, or the staging Worker). The web app at
-# https://usepoof.chat is hosted separately and is never touched from here.
+# Deploys the API Worker only (api.usepoof.chat). The web app at https://usepoof.chat is hosted
+# separately and is never touched from here.
 #
-# Started by hand only (Actions → Deploy → staging / production): a push to main runs the checks
+# Started by hand only (Actions → Deploy → Run workflow, from main): a push to main runs the checks
 # (ci.yml) and nothing else. Every release is built here: bundle → checksum → GitHub attestation →
 # deploy those exact bytes → check that the live API reports this commit. See VERIFICATION.md.
 #
-# Each GitHub environment ("production", "staging") needs:
+# The GitHub environment "production" needs:
 #   secrets  CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
-#   vars     API_URL (e.g. https://api.usepoof.chat), checked after the deploy
-# and "production" should allow deployments from main only (Settings → Environments).
+#   vars     API_URL (https://api.usepoof.chat), checked after the deploy
+# and should allow deployments from main only (Settings → Environments).
 # TURN secrets live in the Worker (wrangler secret put), not here.
 
 on:
   workflow_dispatch:
-    inputs:
-      environment:
-        description: Where to deploy
-        type: choice
-        options: [staging, production]
-        default: staging
 
 concurrency:
-  group: deploy-${{ inputs.environment }}
+  group: deploy
   cancel-in-progress: false
 
 permissions:
@@ -36,21 +30,18 @@ jobs:
   release:
     needs: check
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: production
     permissions:
       contents: read
       id-token: write # Sigstore signing for the attestation
       attestations: write
     env:
-      TARGET: ${{ inputs.environment }}
-      # wrangler.jsonc: the top-level environment is production; staging is `env.staging`.
-      WRANGLER_ENV: ${{ inputs.environment == 'staging' && 'staging' || '' }}
       GIT_REF: ${{ github.ref }}
     steps:
-      - name: Production deploys only from main
-        if: env.TARGET == 'production' && github.ref != 'refs/heads/main'
+      - name: Deploys only from main
+        if: github.ref != 'refs/heads/main'
         run: |
-          echo "::error::Production deploys only from main (this is $GIT_REF)."
+          echo "::error::Deploys only from main (this is $GIT_REF)."
           exit 1
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -70,7 +61,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Bundle the Worker
-        run: pnpm --filter @poof/worker exec wrangler deploy --dry-run --env="$WRANGLER_ENV" --outdir ../release/worker-bundle
+        run: pnpm --filter @poof/worker exec wrangler deploy --dry-run --outdir ../release/worker-bundle
 
       # The client engine the web app ships (README: "The engine for the web app").
       - name: Build the client engine
@@ -96,7 +87,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-${{ env.TARGET }}
+          name: release
           path: |
             release/worker-checksums.sha256
             release/worker-bundle/index.js
@@ -113,7 +104,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           COMMIT: ${{ github.sha }}
         run: >-
-          pnpm exec wrangler deploy --config wrangler.jsonc --env="$WRANGLER_ENV" --no-bundle
+          pnpm exec wrangler deploy --config wrangler.jsonc --no-bundle
           --var "COMMIT_SHA:$COMMIT" ../release/worker-bundle/index.js
 
       - name: The live API runs this commit
@@ -122,7 +113,7 @@ jobs:
           COMMIT: ${{ github.sha }}
         run: |
           if [ -z "$API_URL" ]; then
-            echo "::error::Set the API_URL variable on the '${TARGET}' environment."
+            echo "::error::Set the API_URL variable on the 'production' environment."
             exit 1
           fi
           # A new version takes a few seconds to reach every Cloudflare location.

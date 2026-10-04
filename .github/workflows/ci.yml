@@ -43,7 +43,7 @@ jobs:
       - name: The build is reproducible
         run: |
           for n in 1 2; do
-            pnpm --filter @poof/worker exec wrangler deploy --dry-run --env="" --outdir "$RUNNER_TEMP/worker-$n" > /dev/null
+            pnpm --filter @poof/worker exec wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker-$n" > /dev/null
             pnpm -s build:engine > /dev/null
             cp dist-engine/poof-engine.js "$RUNNER_TEMP/engine-$n.js"
           done

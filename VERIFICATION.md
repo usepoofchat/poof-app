@@ -14,7 +14,7 @@ Below, `RUN_ID` is the number of a run of the Deploy workflow on GitHub, and `CO
 4. Exactly that bundle is deployed (`wrangler deploy --no-bundle`, so the attested bytes are uploaded as they are), with the commit baked in.
 5. The workflow checks that the live API reports that commit.
 
-The files from step 3 are attached to the run as the artifact `release-production` (or `release-staging`) for 90 days.
+The files from step 3 are attached to the run as the artifact `release` for 90 days.
 
 ## 1. Which commit is live
 
@@ -28,7 +28,7 @@ A deployment that reports `"commit":"dev"` was not made by the Deploy workflow.
 ## 2. Check the release
 
 ```bash
-gh run download RUN_ID --repo usepoofchat/poof-app -n release-production -D release
+gh run download RUN_ID --repo usepoofchat/poof-app -n release -D release
 gh attestation verify release/worker-checksums.sha256 --repo usepoofchat/poof-app
 gh attestation verify release/worker-bundle/index.js --repo usepoofchat/poof-app
 ```
@@ -40,7 +40,7 @@ The bundle is reproducible, so you can compare the attested checksum with your o
 ```bash
 git clone https://github.com/usepoofchat/poof-app && cd poof-app && git checkout COMMIT
 pnpm install --frozen-lockfile
-pnpm --filter @poof/worker exec wrangler deploy --dry-run --env="" --outdir ../out
+pnpm --filter @poof/worker exec wrangler deploy --dry-run --outdir ../out
 sha256sum out/index.js        # compare with release/worker-checksums.sha256
 ```
 

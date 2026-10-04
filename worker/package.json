@@ -10,8 +10,7 @@
     "typecheck": "wrangler types --check && tsc -p tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "deploy": "wrangler deploy",
-    "deploy:staging": "wrangler deploy --env staging"
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
     "@poof/protocol": "workspace:*",

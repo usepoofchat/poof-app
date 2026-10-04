@@ -74,7 +74,7 @@ pnpm check          # typecheck + lint + unit tests + e2e
 pnpm test:all       # unit tests only (hooks, protocol, core, worker)
 pnpm test:e2e       # boots the API locally on :8798 and runs the engine against it
 pnpm test:browser   # real Chrome over real WebRTC, through the smoke-test page and the local API
-pnpm --filter @poof/e2e run load -- --url http://localhost:8787   # load test against a locally running API (SECURITY.md)
+pnpm --filter @poof/e2e run load --url http://localhost:8787   # load test against a locally running API (SECURITY.md)
 ```
 
 | Package                    | Tests                                                                                                                                                                                                                                                                                                                                              | What they cover                       |

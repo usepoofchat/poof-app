@@ -1,11 +1,11 @@
 // Load test for the Durable Object path: many rooms at once, two sockets each, signaling bursts in
 // both directions, an optional idle period (hibernation), then destroy.
 //
-//   pnpm --filter @poof/e2e run load -- --url http://localhost:8787 --rooms 200 --concurrency 25
+//   pnpm --filter @poof/e2e run load --url http://localhost:8787 --rooms 200 --concurrency 25
 //
 // Against `wrangler dev` each simulated person sends its own CF-Connecting-IP, so the per-IP rate
-// limits don't cap the run. Cloudflare overwrites that header in front of a deployed Worker: from
-// one machine, staging allows 5 new rooms and 10 joins per minute. See SECURITY.md (load testing).
+// limits don't cap the run. A deployed Worker gets no such header (Cloudflare refuses requests that
+// set it): from one machine, staging allows 5 new rooms and 10 joins per minute. See SECURITY.md.
 import { parseArgs } from "node:util";
 import {
   PROTOCOL_VERSION,
@@ -27,6 +27,7 @@ const { values: opts } = parseArgs({
 });
 const BASE = opts.url.replace(/\/+$/, "");
 const WS_BASE = BASE.replace(/^http/, "ws");
+const LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(BASE);
 const ROOMS = Number(opts.rooms);
 const CONCURRENCY = Number(opts.concurrency);
 const SIGNALS = Number(opts.signals);
@@ -40,6 +41,8 @@ const nextIp = () => {
   const n = ++ipSeq;
   return `10.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}`;
 };
+/** A fresh simulated client IP, for `wrangler dev` only. */
+const ipHeader = (): Record<string, string> => (LOCAL ? { "CF-Connecting-IP": nextIp() } : {});
 
 // No constructor parameter properties: Node's type stripping doesn't support them.
 class Failure extends Error {
@@ -75,7 +78,7 @@ class Peer {
   static open(roomId: string): Promise<Peer> {
     // Node's WebSocket (undici) takes extra headers; browsers don't, which is fine for a CLI.
     const ws = new WebSocket(`${WS_BASE}/ws/rooms/${roomId}?peerId=${randomId()}`, {
-      headers: { "CF-Connecting-IP": nextIp() },
+      headers: ipHeader(),
     } as unknown as string[]);
     const peer = new Peer(ws);
     return new Promise((resolve, reject) => {
@@ -134,7 +137,7 @@ async function oneRoom(): Promise<void> {
   let t = performance.now();
   const res = await fetch(`${BASE}/api/rooms`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "CF-Connecting-IP": nextIp() },
+    headers: { "Content-Type": "application/json", ...ipHeader() },
     body: JSON.stringify({ ownerHash }),
   });
   if (res.status !== 200) throw new Failure("create", `HTTP ${res.status}`);

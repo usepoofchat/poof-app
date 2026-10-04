@@ -2,9 +2,11 @@ import {
   Channel,
   FrameType,
   type ChannelId,
+  aiPlaintextSchema,
   chatPlaintextSchema,
   ctlPlaintextSchema,
   pqMessageSchema,
+  type AiPlaintext,
   type ChatPlaintext,
   type CtlPlaintext,
   type FrameTypeId,
@@ -39,6 +41,8 @@ export interface MemberLinkHooks {
   /** The encrypted channel just came up. */
   connected(): void;
   chat(message: ChatPlaintext): void;
+  /** An AI answer this member asked for. */
+  ai(message: AiPlaintext): void;
   /** Control messages other than `connection_type` (which the link handles itself). */
   ctl(message: CtlPlaintext): void;
   /** Reported at most once per link. */
@@ -319,6 +323,9 @@ export class MemberLink {
     if (frame.type === FrameType.Chat) {
       const chat = chatPlaintextSchema.safeParse(safeJson(fromUtf8(frame.plaintext)));
       if (chat.success) this.hooks.chat(chat.data);
+    } else if (frame.type === FrameType.Ai) {
+      const ai = aiPlaintextSchema.safeParse(safeJson(fromUtf8(frame.plaintext)));
+      if (ai.success) this.hooks.ai(ai.data);
     } else if (frame.type === FrameType.Ctl) {
       const ctl = ctlPlaintextSchema.safeParse(safeJson(fromUtf8(frame.plaintext)));
       if (!ctl.success) return;

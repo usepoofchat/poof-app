@@ -70,6 +70,7 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
     /** The other members already present (a hint for the UI; links come with `paired`). */
     members: z.array(peerIdSchema).max(MAX_ROOM_PEERS),
     limits: limitsSchema,
+    ai: z.boolean(),
   }),
   z.object({
     v,
@@ -103,6 +104,7 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
     serverNow: z.number().int(),
     maxPeers: z.number().int().positive().max(MAX_ROOM_PEERS),
     limits: limitsSchema,
+    ai: z.boolean(),
     /**
      * Fresh relay credentials that last until the new end of the room. Links that go through the
      * relay restart ICE with them, since the old ones expire at the old end.

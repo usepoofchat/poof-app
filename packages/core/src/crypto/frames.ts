@@ -22,7 +22,7 @@ const VALID_CHANNELS: ReadonlySet<number> = new Set(Object.values(Channel));
 const VALID_TYPES: ReadonlySet<number> = new Set(Object.values(FrameType));
 /** Which frame types may travel on which channel. */
 const TYPES_BY_CHANNEL: Record<number, ReadonlySet<number>> = {
-  [Channel.Ctl]: new Set([FrameType.Chat, FrameType.Ctl]),
+  [Channel.Ctl]: new Set([FrameType.Chat, FrameType.Ctl, FrameType.Ai]),
   [Channel.Files]: new Set([
     FrameType.FileMeta,
     FrameType.FileChunk,

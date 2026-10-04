@@ -57,7 +57,9 @@ describe("useCreateRoom", () => {
       void result.current.create();
     });
     await waitFor(() => expect(result.current.creating).toBe(true));
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // The owner hash is computed (async) before the request goes out: wait for it, then make sure
+    // the second click didn't send another one.
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
 
     await act(async () => {
       respond(roomResponse());

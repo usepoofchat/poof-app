@@ -22,8 +22,8 @@ export interface Variant {
   ai: boolean;
 }
 
-/** The AI model isn't live yet: no pass for it can be bought. */
-export const AI_AVAILABLE = false;
+/** Passes with the AI model can be bought. */
+export const AI_AVAILABLE = true;
 
 /** Fewest people: two, or just you with the AI model. */
 export const minPeople = (ai: boolean): number => (ai ? 1 : 2);

@@ -50,6 +50,8 @@ export type ChannelId = (typeof Channel)[keyof typeof Channel];
 export const FrameType = {
   Chat: 0x01,
   Ctl: 0x02,
+  /** An AI answer (see ai.ts), sent by whoever asked. */
+  Ai: 0x03,
   FileMeta: 0x10,
   FileChunk: 0x11,
   FileEnd: 0x12,
@@ -92,6 +94,15 @@ export const ctlPlaintextSchema = z.discriminatedUnion("kind", [
    * no text. Older clients drop unknown control kinds, so they simply never show it.
    */
   z.object({ kind: z.literal("typing"), on: z.boolean() }),
+  /**
+   * The sender asked the AI (`askId` = their question's message id): `thinking` while the answer
+   * streams in, `failed` if it never came. The answer itself is a FrameType.Ai frame.
+   */
+  z.object({
+    kind: z.literal("ai"),
+    askId: z.string().min(1).max(64),
+    state: z.enum(["thinking", "failed"]),
+  }),
 ]);
 export type CtlPlaintext = z.infer<typeof ctlPlaintextSchema>;
 

@@ -65,13 +65,18 @@ describe("passes (RFC 9474 blind RSA)", () => {
     });
   });
 
-  it("refuses a signature from another key", async () => {
+  it("refuses a blind signature that isn't the key's", async () => {
     const server = await issuer();
-    const other = await issuer();
     const pending = await startPass([server.key], V);
-    await expect(finishPass(pending, await other.sign(pending.blindedMsg))).rejects.toMatchObject({
-      code: "pay_failed",
-    });
+    // Anything but the real blind signature: it must not unblind into a valid pass.
+    for (let i = 0; i < 5; i++) {
+      const forged = new Uint8Array(256);
+      crypto.getRandomValues(forged);
+      forged[0] = forged[0]! & 0x7f; // below the modulus, so it gets as far as the signature check
+      await expect(finishPass(pending, toBase64Url(forged))).rejects.toMatchObject({
+        code: "pay_failed",
+      });
+    }
   });
 
   it("the hash the wallet signs is the blinded message's SHA-256, in hex", async () => {

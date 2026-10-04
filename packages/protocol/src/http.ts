@@ -6,6 +6,7 @@ import {
   TIERS,
 } from "./constants.ts";
 import { ownerHashSchema, ownerSecretSchema, roomIdSchema } from "./ids.ts";
+import { aiHashSchema } from "./ai.ts";
 import { passSchema } from "./pay.ts";
 
 export const planSchema = z.enum(["free", "super"]);
@@ -42,6 +43,11 @@ export const errorCodeSchema = z.enum([
   "pass_invalid",
   "pass_used",
   "not_owner",
+  // The AI model
+  "ai_not_enabled",
+  "ai_not_ready",
+  "ai_budget_exhausted",
+  "ai_unavailable",
 ]);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 
@@ -65,6 +71,8 @@ export const createRoomResponseSchema = z.object({
   tier: tierSchema,
   maxPeers: z.number().int().positive().max(MAX_ROOM_PEERS),
   limits: limitsSchema,
+  /** The room includes the AI model. */
+  ai: z.boolean(),
 });
 export type CreateRoomResponse = z.infer<typeof createRoomResponseSchema>;
 
@@ -72,6 +80,8 @@ export type CreateRoomResponse = z.infer<typeof createRoomResponseSchema>;
 export const upgradeRoomRequestSchema = z.object({
   ownerSecret: ownerSecretSchema,
   pass: passSchema,
+  /** The room's AI token hash. Used when the pass includes the AI model. */
+  aiHash: aiHashSchema.optional(),
 });
 export type UpgradeRoomRequest = z.infer<typeof upgradeRoomRequestSchema>;
 

@@ -36,6 +36,9 @@ async function signer() {
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
+// RSA key generation (2048 bits) takes a random, sometimes long time, more so on a busy CI machine.
+const RSA = { timeout: 30_000 };
+
 describe("transferData", () => {
   it("is ERC-20 transfer(to, amount) calldata", () => {
     expect(transferData("0x68222E6dC73e161045233B2b76a47d98F84A7e8C", 588_000)).toBe(
@@ -62,7 +65,7 @@ describe("prices", () => {
   });
 });
 
-describe("paymentMessage", () => {
+describe("paymentMessage", RSA, () => {
   it("keeps a Solana signature as it is (base58 is case-sensitive)", async () => {
     const { key } = await signer();
     const pending = await startPass([key], V);
@@ -87,7 +90,7 @@ describe("paymentMessage", () => {
   });
 });
 
-describe("redeemPayment", () => {
+describe("redeemPayment", RSA, () => {
   it("reports pending, then turns the blind signature into a pass", async () => {
     const { key, privateKey } = await signer();
     const pending = await startPass([key], V);

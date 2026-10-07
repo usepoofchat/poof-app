@@ -35,7 +35,10 @@ async function issuer(variant = V) {
   };
 }
 
-describe("passes (RFC 9474 blind RSA)", () => {
+// RSA key generation (2048 bits) takes a random, sometimes long time, more so on a busy CI machine.
+const RSA = { timeout: 30_000 };
+
+describe("passes (RFC 9474 blind RSA)", RSA, () => {
   it("a blinded pass signed by the server verifies, and the server never saw the message", async () => {
     const server = await issuer();
     const pending = await startPass([server.key], V);

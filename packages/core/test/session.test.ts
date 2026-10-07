@@ -747,9 +747,16 @@ describe("expiry safety net (fake timers)", () => {
     const deps = { pqTimeoutMs: 600_000, signaling: { pingIntervalMs: 1e9, pongTimeoutMs: 1e9 } };
     const alice = w.make(ALICE, deps);
     const bob = w.make(BOB, deps);
+    // Bounded by real time, not by a number of steps: the crypto runs on the real clock, and a slow
+    // machine (CI) needs more steps for it. Fake time still moves at most 2 s.
     const settle = async (done: () => boolean) => {
-      for (let i = 0; i < 400 && !done(); i++) {
-        await advance(5);
+      const started = performance.now();
+      let fakeMs = 0;
+      while (!done() && performance.now() - started < 15_000) {
+        if (fakeMs < 2_000) {
+          await advance(5);
+          fakeMs += 5;
+        }
         await new Promise((r) => setImmediate(r));
       }
     };

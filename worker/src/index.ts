@@ -25,7 +25,7 @@ import {
   withCors,
 } from "./http.ts";
 import { aiAttestation, aiChat, registerAi } from "./ai.ts";
-import { payConfig, payQuote, redeem, spendPass, unspendPass } from "./pay.ts";
+import { payConfig, redeem, spendPass, unspendPass } from "./pay.ts";
 import { positiveInt, randomId } from "./util.ts";
 
 export { RoomDO } from "./room-do.ts";
@@ -103,10 +103,6 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (path === "/api/pay/config") {
     if (method !== "GET") return methodNotAllowed();
     return payConfig(env);
-  }
-  if (path === "/api/pay/quote") {
-    if (method !== "GET") return methodNotAllowed();
-    return payQuote(request, env, url);
   }
   if (path === "/api/pay/redeem") {
     if (method !== "POST") return methodNotAllowed();

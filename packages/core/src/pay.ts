@@ -1,22 +1,17 @@
 import {
   errorBodySchema,
   payConfigSchema,
-  quoteResponseSchema,
   redeemMessage,
   redeemResponseSchema,
-  variantId,
   type ChainName,
   type Pass,
   type PayConfig,
-  type QuoteResponse,
   type TokenSymbol,
-  type Variant,
 } from "@poof/protocol";
 import { PoofError } from "./errors.ts";
 import { blindedHash, finishPass, type PendingPass } from "./pass.ts";
 
 export {
-  formatEth,
   formatUsd,
   isValidVariant,
   priceMicros,
@@ -24,10 +19,11 @@ export {
   variantId,
 } from "@poof/protocol";
 export type {
+  ChainKind,
   ChainName,
   Pass,
+  PayChain,
   PayConfig,
-  QuoteResponse,
   TokenSymbol,
   Variant,
 } from "@poof/protocol";
@@ -35,10 +31,12 @@ export type {
 /**
  * Paying for a Super Quant-Room, from the browser:
  *
- *   1. fetchPayConfig → where to pay, in what, and the pass keys
+ *   1. fetchPayConfig → the chains (each with Poof's address on it and its stablecoins), and the
+ *      pass keys
  *   2. startPass (pass.ts) → a blinded pass for the chosen variant; keep it until it's spent
- *   3. the wallet sends `transferData(...)` to the token contract (the price, to `config.treasury`)
- *   4. the wallet signs `paymentMessage(...)` (personal_sign)
+ *   3. the wallet pays the price to the chain's `treasury`: on an EVM chain it sends
+ *      `transferData(...)` to the token contract; on Solana it sends an SPL token transfer
+ *   4. the wallet signs `paymentMessage(...)` (EVM: personal_sign; Solana: signMessage)
  *   5. redeemPayment until it says "ok" (it says "pending" while the transfer confirms) → a Pass
  *   6. createRoom({ pass }) or session.upgrade(pass)
  */
@@ -61,37 +59,13 @@ export async function fetchPayConfig(opts: {
   return parsed.data;
 }
 
-/** ERC-20 `transfer(to, amount)` calldata: what the wallet sends to the token contract. */
+/** ERC-20 `transfer(to, amount)` calldata: what the wallet sends to the token contract (EVM). */
 export function transferData(to: string, micros: number): `0x${string}` {
   if (!/^0x[0-9a-fA-F]{40}$/.test(to) || !Number.isSafeInteger(micros) || micros <= 0) {
     throw new PoofError("pay_failed", "Not a valid payment.");
   }
   const pad = (hex: string) => hex.padStart(64, "0");
   return `0xa9059cbb${pad(to.slice(2).toLowerCase())}${pad(micros.toString(16))}`;
-}
-
-/**
- * ETH only: what to send right now for `variant` on `chain`, at the market price. The payment must
- * be mined before `expiresAt`; send `quote` back with the redemption.
- */
-export async function fetchEthQuote(opts: {
-  fetch: typeof fetch;
-  origin: string;
-  chain: ChainName;
-  variant: Variant;
-}): Promise<QuoteResponse> {
-  let res: Response;
-  try {
-    res = await opts.fetch(
-      `${opts.origin}/api/pay/quote?chain=${opts.chain}&variant=${variantId(opts.variant)}`,
-    );
-  } catch {
-    throw new PoofError("connection_failed", "Could not reach the server.");
-  }
-  if (!res.ok) throw serverError(res.status, await res.json().catch(() => null));
-  const parsed = quoteResponseSchema.safeParse(await res.json().catch(() => null));
-  if (!parsed.success) throw new PoofError("connection_failed", "Unexpected server response.");
-  return parsed.data;
 }
 
 /** The text the paying wallet signs: it ties this transaction to this blinded pass. */
@@ -117,12 +91,11 @@ export async function redeemPayment(opts: {
   origin: string;
   chain: ChainName;
   token: TokenSymbol;
+  /** The transaction's hash (EVM) or signature (Solana). */
   txHash: string;
   pending: PendingPass;
   payer: string;
   signature: string;
-  /** ETH only: the quote from fetchEthQuote. */
-  quote?: string;
 }): Promise<RedeemOutcome> {
   let res: Response;
   try {
@@ -138,7 +111,6 @@ export async function redeemPayment(opts: {
         blindedMsg: opts.pending.blindedMsg,
         payer: opts.payer,
         signature: opts.signature,
-        ...(opts.quote ? { quote: opts.quote } : {}),
       }),
     });
   } catch {

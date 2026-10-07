@@ -35,5 +35,7 @@ export default defineConfig({
       },
     }),
   ],
-  test: { setupFiles: ["./test/setup.ts"] },
+  // A CI runner is several times slower than a laptop here (D1 setup, Durable Objects, WebSockets):
+  // 20 s instead of vitest's 5 s, so a slow machine isn't mistaken for a failure.
+  test: { setupFiles: ["./test/setup.ts"], testTimeout: 20_000 },
 });

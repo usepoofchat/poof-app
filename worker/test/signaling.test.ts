@@ -362,7 +362,9 @@ describe("expiry", () => {
     const room = await createRoom();
     const stub = env.ROOM.getByName(room.roomId);
     await runInDurableObject(stub, async (_i, state) => {
-      await state.storage.setAlarm(Date.now() + 10);
+      // An old deadline, still before the room's own: far enough out that it can't fire on its own
+      // before the test runs it (a busy machine can take longer than a few ms to get there).
+      await state.storage.setAlarm(Date.now() + 60_000);
     });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect((await api(`/api/rooms/${room.roomId}`)).status).toBe(200);

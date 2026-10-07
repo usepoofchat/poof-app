@@ -100,7 +100,8 @@ export class TestSocket {
     for (const w of this.waiters.splice(0)) w();
   }
 
-  private async until(predicate: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
+  /** Waits on real time: generous, because a busy CI machine can be several times slower. */
+  private async until(predicate: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (!predicate()) {
       if (Date.now() > deadline) {

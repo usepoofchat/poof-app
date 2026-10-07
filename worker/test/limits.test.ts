@@ -179,5 +179,6 @@ describe("socket fuzzing", () => {
       }),
       { numRuns: 40 },
     );
-  });
+    // 40 rooms, three sockets each: seconds on a laptop, longer on a busy CI runner.
+  }, 60_000);
 });

@@ -10,13 +10,15 @@ describe("POST /api/rooms", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = createRoomResponseSchema.parse(await res.json());
+    const after = Date.now();
 
     expect(body.plan).toBe("free");
     expect(body.tier).toBe("free");
     expect(body.maxPeers).toBe(2);
     expect(body.limits).toEqual({ fileTransfer: false, fileMaxBytes: 2 * 1024 * 1024 });
-    expect(body.expiresAt - before).toBeGreaterThanOrEqual(599_000);
-    expect(body.expiresAt - before).toBeLessThanOrEqual(601_000);
+    // 10 minutes from when the server handled it, which was between `before` and `after`.
+    expect(body.expiresAt).toBeGreaterThanOrEqual(before + 600_000);
+    expect(body.expiresAt).toBeLessThanOrEqual(after + 600_000);
     expect(body.roomId).toMatch(/^[A-Za-z0-9_-]{22}$/);
   });
 

@@ -39,5 +39,10 @@
     "@poof/core": "workspace:*",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "sharp": ">=0.35.5"
+    }
   }
 }

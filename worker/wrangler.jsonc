@@ -51,10 +51,8 @@
     // Comma-separated Origins allowed to call the API from a browser. `pnpm dev` adds the local ones.
     "ALLOWED_ORIGINS": "https://usepoof.chat",
     "COMMIT_SHA": "dev",
-    // Where Super Quant-Room payments go: USDC on Ethereum and Base, USDG on Robinhood Chain …
+    // Where Super Quant-Room payments go (USDC/USDT on Ethereum and Base, USDG on Robinhood Chain).
     "PAY_TREASURY": "0x68222E6dC73e161045233B2b76a47d98F84A7e8C",
-    // … and USDC on Solana. Empty = Solana isn't offered.
-    "PAY_TREASURY_SOLANA": "AGQzMmBEgxTeLonpt11isEu6KBDv4h3VbPofCEy4i8Et",
   },
 
   // Zero-log posture: no Workers logs, no traces.

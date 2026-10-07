@@ -5,37 +5,31 @@ import {
   priceMicros,
   redeemMessage,
   variantId,
+  weiForUsd,
   type ChainName,
   type Pass,
   type PayConfig,
+  type QuoteResponse,
   type ServerMessage,
   type TokenSymbol,
   type Variant,
 } from "@poof/protocol";
 import { pad, toHex, verifyMessage, type Hex } from "viem";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { fromBase58, toBase58 } from "../src/base58.ts";
-import { setChainReadersForTests } from "../src/pay.ts";
-import {
-  verifySolanaMessage,
-  type EvmReader,
-  type SolanaReader,
-  type SolanaTransaction,
-} from "../src/payments.ts";
+import { setChainReaderForTests } from "../src/pay.ts";
+import type { ChainReader } from "../src/payments.ts";
 import { fromBase64Url, toBase64Url } from "../src/util.ts";
 import { TestSocket, newOwner, peer } from "./helpers.ts";
 
 const SITE = "https://usepoof.chat";
 const TREASURY = env.PAY_TREASURY as Hex;
-const SOLANA_TREASURY = env.PAY_TREASURY_SOLANA as string;
-const USDC_ON_SOLANA = CHAIN_CONFIG.solana.tokens.USDC!;
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const V4: Variant = { lifetime: 3600, people: 4, ai: false };
 const suite = () => RSABSSA.SHA384.PSS.Randomized();
 
-// ── Fake chains: transactions we "mine", real wallet signatures ───────────────
+// ── A fake chain: transactions we "mine", real wallet signatures ───────────────
 
 interface FakeTx {
   chain: ChainName;
@@ -43,21 +37,38 @@ interface FakeTx {
   blockNumber: bigint;
   minedAt: number;
   logs: { address: string; topics: string[]; data: string }[];
+  /** The transaction itself: ETH payments carry their amount as `value`. */
+  from: string;
+  to: string;
+  value: bigint;
 }
 
-/** An EVM chain (Base by default). */
 class FakeChain {
   txs = new Map<string, FakeTx>();
   head = 1000n;
   down = false;
+  /** Chainlink ETH/USD, 8 decimals: $2,707.23. */
+  ethUsd = 270_723_000_000n;
+  ethUsdUpdatedAt = Date.now();
 
-  reader = (): EvmReader => ({
+  reader = (): ChainReader => ({
     getReceipt: async (hash) => {
       if (this.down) throw new Error("rpc down");
       const tx = this.txs.get(hash.toLowerCase());
       return tx
         ? { status: tx.status ?? "success", blockNumber: tx.blockNumber, logs: tx.logs }
         : null;
+    },
+    getTransaction: async (hash) => {
+      if (this.down) throw new Error("rpc down");
+      const tx = this.txs.get(hash.toLowerCase());
+      return tx ? { from: tx.from, to: tx.to, value: tx.value } : null;
+    },
+    call: async () => {
+      if (this.down) throw new Error("rpc down");
+      const word = (n: bigint) => n.toString(16).padStart(64, "0");
+      const t = BigInt(Math.floor(this.ethUsdUpdatedAt / 1000));
+      return `0x${word(1n)}${word(this.ethUsd)}${word(t)}${word(t)}${word(1n)}`;
     },
     getBlockNumber: async () => this.head,
     getBlockTimestamp: async (n) => {
@@ -85,6 +96,9 @@ class FakeChain {
     this.head += 10n; // every payment in its own block
     this.txs.set(hash, {
       chain,
+      from: opts.from,
+      to: tokenAddress,
+      value: 0n,
       blockNumber: this.head - BigInt((opts.confirmations ?? 5) - 1),
       minedAt: Date.now() - (opts.ageMs ?? 60_000),
       logs: [
@@ -97,116 +111,40 @@ class FakeChain {
     });
     return hash;
   }
-}
 
-/** Solana: token balances before and after, signers, finality. */
-class FakeSolana {
-  txs = new Map<string, { tx: SolanaTransaction; finalized: boolean; confirmations: number }>();
-  down = false;
-
-  reader = (): SolanaReader => ({
-    getTransaction: async (signature) => {
-      if (this.down) throw new Error("rpc down");
-      const entry = this.txs.get(signature);
-      return entry?.finalized ? entry.tx : null;
-    },
-    getStatus: async (signature) => {
-      if (this.down) throw new Error("rpc down");
-      const entry = this.txs.get(signature);
-      return entry ? { confirmations: entry.confirmations, failed: entry.tx.failed } : null;
-    },
-    verifyMessage: verifySolanaMessage,
-  });
-
-  /** `from` sends USDC to `to` (Poof by default), paying the fee itself unless `feePayer` does. */
-  pay(opts: {
-    from: string;
-    micros: number;
-    to?: string;
-    mint?: string;
-    feePayer?: string;
-    finalized?: boolean;
-    confirmations?: number;
-    ageMs?: number;
-    failed?: boolean;
-  }): string {
-    const signature = toBase58(crypto.getRandomValues(new Uint8Array(64)));
-    const mint = opts.mint ?? USDC_ON_SOLANA;
-    const to = opts.to ?? SOLANA_TREASURY;
-    const amount = BigInt(opts.micros);
-    const had = 10_000_000n;
-    this.txs.set(signature, {
-      finalized: opts.finalized ?? true,
-      confirmations: opts.confirmations ?? 0,
-      tx: {
-        failed: opts.failed ?? false,
-        blockTime: Math.floor((Date.now() - (opts.ageMs ?? 60_000)) / 1000),
-        signers: opts.feePayer ? [opts.feePayer, opts.from] : [opts.from],
-        before: [
-          { owner: opts.from, mint, amount: had },
-          { owner: to, mint, amount: 0n },
-        ],
-        after: [
-          { owner: opts.from, mint, amount: had - amount },
-          { owner: to, mint, amount },
-        ],
-      },
+  /** ETH sent straight to `to` (the transaction's own value). */
+  payEth(opts: { from: Hex; wei: bigint; chain?: ChainName; to?: Hex; minedAt?: number }): Hex {
+    const hash = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    this.head += 10n;
+    this.txs.set(hash, {
+      chain: opts.chain ?? "base",
+      from: opts.from,
+      to: opts.to ?? TREASURY,
+      value: opts.wei,
+      blockNumber: this.head - 4n,
+      minedAt: opts.minedAt ?? Date.now() - 60_000,
+      logs: [],
     });
-    return signature;
+    return hash;
   }
 }
 
 let chain: FakeChain;
-let solana: FakeSolana;
 beforeEach(() => {
   chain = new FakeChain();
-  solana = new FakeSolana();
-  setChainReadersForTests({ evm: () => chain.reader(), solana: () => solana.reader() });
+  setChainReaderForTests(() => chain.reader());
 });
-afterEach(() =>
-  setChainReadersForTests({ evm: () => chain.reader(), solana: () => solana.reader() }),
-);
-
-/** A wallet, on either kind of chain: an address and a way to sign the redemption text. */
-interface Signer {
-  address: string;
-  signMessage(message: string): Promise<string>;
-}
-
-const evmWallet = (account = privateKeyToAccount(generatePrivateKey())): Signer => ({
-  address: account.address,
-  signMessage: (message) => account.signMessage({ message }),
-});
-
-/** A Solana wallet: an ed25519 key; its address is the public key in base58. */
-async function solanaWallet(): Promise<Signer> {
-  const keys = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
-    "sign",
-    "verify",
-  ])) as CryptoKeyPair;
-  const publicKey = new Uint8Array(
-    (await crypto.subtle.exportKey("raw", keys.publicKey)) as ArrayBuffer,
-  );
-  return {
-    address: toBase58(publicKey),
-    signMessage: async (message) =>
-      toBase58(
-        new Uint8Array(
-          await crypto.subtle.sign("Ed25519", keys.privateKey, new TextEncoder().encode(message)),
-        ),
-      ),
-  };
-}
+afterEach(() => setChainReaderForTests(() => chain.reader()));
 
 // ── The browser's side, done by hand (the engine does the same) ────────────────
 
-function call(path: string, init: RequestInit = {}, withEnv: Env = env): Promise<Response> {
+function call(path: string, init: RequestInit = {}): Promise<Response> {
   return worker.fetch(
     new Request(`https://api.usepoof.chat${path}`, {
       ...init,
       headers: { Origin: SITE, "Content-Type": "application/json", ...init.headers },
     }),
-    withEnv,
+    env,
   );
 }
 const post = (path: string, body: unknown) =>
@@ -248,8 +186,8 @@ async function blind(variant: Variant): Promise<Blinded> {
 
 async function redeemBody(
   b: Blinded,
-  txHash: string,
-  wallet: Signer,
+  txHash: Hex,
+  wallet: PrivateKeyAccount,
   chainName: ChainName = "base",
   token: TokenSymbol = "USDC",
 ) {
@@ -267,7 +205,7 @@ async function redeemBody(
     keyId: b.keyId,
     blindedMsg: toBase64Url(b.blindedMsg),
     payer: wallet.address,
-    signature: await wallet.signMessage(message),
+    signature: await wallet.signMessage({ message }),
   };
 }
 
@@ -282,17 +220,20 @@ async function finish(b: Blinded, blindSignature: string): Promise<Pass> {
 }
 
 /** Pay, redeem and finish: a pass for `variant`. */
-async function buyPass(variant = V4, wallet = evmWallet()): Promise<Pass> {
+async function buyPass(
+  variant = V4,
+  wallet = privateKeyToAccount(generatePrivateKey()),
+): Promise<Pass> {
   const b = await blind(variant);
-  const tx = chain.pay({ from: wallet.address as Hex, micros: priceMicros(variant) });
+  const tx = chain.pay({ from: wallet.address, micros: priceMicros(variant) });
   const res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet));
   expect(res.status).toBe(200);
   return finish(b, ((await res.json()) as { blindSignature: string }).blindSignature);
 }
 
-const ledger = (tx: string) =>
+const ledger = (tx: Hex) =>
   env.LEDGER.prepare("SELECT * FROM payments WHERE tx_hash = ?")
-    .bind(tx.startsWith("0x") ? tx.toLowerCase() : tx)
+    .bind(tx.toLowerCase())
     .first<Record<string, unknown>>();
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -302,20 +243,17 @@ describe("GET /api/pay/config", () => {
     const res = await call("/api/pay/config");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe(SITE);
     const cfg = (await res.json()) as PayConfig;
-    expect(
-      cfg.chains.map((c) => [c.name, c.kind, c.chainId, c.treasury, c.tokens.map((t) => t.symbol)]),
-    ).toEqual([
-      ["ethereum", "evm", 1, "0x68222E6dC73e161045233B2b76a47d98F84A7e8C", ["USDC"]],
-      ["base", "evm", 8453, "0x68222E6dC73e161045233B2b76a47d98F84A7e8C", ["USDC"]],
-      ["robinhood", "evm", 4663, "0x68222E6dC73e161045233B2b76a47d98F84A7e8C", ["USDG"]],
-      ["solana", "solana", null, "AGQzMmBEgxTeLonpt11isEu6KBDv4h3VbPofCEy4i8Et", ["USDC"]],
+    expect(cfg.treasury).toBe("0x68222E6dC73e161045233B2b76a47d98F84A7e8C");
+    expect(cfg.chains.map((c) => [c.name, c.chainId, c.tokens.map((t) => t.symbol)])).toEqual([
+      ["ethereum", 1, ["USDC", "ETH"]],
+      ["base", 8453, ["USDC", "ETH"]],
+      ["robinhood", 4663, ["USDG", "ETH"]],
     ]);
-    // Every stablecoin has 6 decimals; on Solana the address is the mint.
-    expect(cfg.chains.flatMap((c) => c.tokens.map((t) => t.decimals))).toEqual([6, 6, 6, 6]);
-    expect(cfg.chains[3]!.tokens[0]).toEqual({
-      symbol: "USDC",
-      address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      decimals: 6,
+    // ETH is the chain's own coin: no contract, 18 decimals.
+    expect(cfg.chains[1]!.tokens.find((t) => t.symbol === "ETH")).toEqual({
+      symbol: "ETH",
+      address: null,
+      decimals: 18,
     });
     // 1 h and 24 h: 2 to 10 people, or 1 to 10 with the AI model.
     expect(cfg.keys).toHaveLength(38);
@@ -324,22 +262,13 @@ describe("GET /api/pay/config", () => {
     // Stable: the same keys every time.
     expect((await config()).keys).toEqual(cfg.keys);
   });
-
-  it("leaves Solana out while Poof has no address there", async () => {
-    const res = await call("/api/pay/config", {}, {
-      ...env,
-      PAY_TREASURY_SOLANA: "",
-    } as unknown as Env);
-    const cfg = (await res.json()) as PayConfig;
-    expect(cfg.chains.map((c) => c.name)).toEqual(["ethereum", "base", "robinhood"]);
-  });
 });
 
 describe("POST /api/pay/redeem", () => {
   it("a paid pass opens a Super Quant-Room of exactly that kind, and the ledger has price and amount but no room", async () => {
-    const wallet = evmWallet();
+    const wallet = privateKeyToAccount(generatePrivateKey());
     const b = await blind(V4);
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 588_000 });
+    const tx = chain.pay({ from: wallet.address, micros: 588_000 });
     const res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet));
     expect(res.status).toBe(200);
     const pass = await finish(b, ((await res.json()) as { blindSignature: string }).blindSignature);
@@ -385,7 +314,7 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("says 'pending' until the payment is mined and confirmed", async () => {
-    const wallet = evmWallet();
+    const wallet = privateKeyToAccount(generatePrivateKey());
     const b = await blind(V4);
     // Not mined yet.
     const unknown = toHex(crypto.getRandomValues(new Uint8Array(32)));
@@ -394,7 +323,7 @@ describe("POST /api/pay/redeem", () => {
     expect(await res.json()).toEqual({ status: "pending", confirmations: 0, needed: 1 });
     // Ethereum needs 2 confirmations; this one has 1.
     const tx = chain.pay({
-      from: wallet.address as Hex,
+      from: wallet.address,
       micros: 588_000,
       chain: "ethereum",
       confirmations: 1,
@@ -407,9 +336,9 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("too little: refused, and recorded with what was due and what arrived", async () => {
-    const wallet = evmWallet();
+    const wallet = privateKeyToAccount(generatePrivateKey());
     const b = await blind(V4);
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 500_000 });
+    const tx = chain.pay({ from: wallet.address, micros: 500_000 });
     const res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet));
     expect(res.status).toBe(402);
     expect(await res.json()).toMatchObject({
@@ -430,9 +359,9 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("more than the price is fine, and recorded", async () => {
-    const wallet = evmWallet();
+    const wallet = privateKeyToAccount(generatePrivateKey());
     const b = await blind(V4);
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 1_000_000 });
+    const tx = chain.pay({ from: wallet.address, micros: 1_000_000 });
     expect((await post("/api/pay/redeem", await redeemBody(b, tx, wallet))).status).toBe(200);
     expect(await ledger(tx)).toMatchObject({
       required_micros: 588_000,
@@ -442,9 +371,9 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("someone who didn't pay can't redeem another person's transaction", async () => {
-    const payer = evmWallet();
-    const thief = evmWallet();
-    const tx = chain.pay({ from: payer.address as Hex, micros: 588_000 });
+    const payer = privateKeyToAccount(generatePrivateKey());
+    const thief = privateKeyToAccount(generatePrivateKey());
+    const tx = chain.pay({ from: payer.address, micros: 588_000 });
     // Signing as themselves: the payment didn't come from them.
     let res = await post("/api/pay/redeem", await redeemBody(await blind(V4), tx, thief));
     expect(res.status).toBe(422);
@@ -459,17 +388,17 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("refuses transfers to another address, other tokens, failed and old transactions", async () => {
-    const wallet = evmWallet();
+    const wallet = privateKeyToAccount(generatePrivateKey());
     const cases: Hex[] = [
       chain.pay({
-        from: wallet.address as Hex,
+        from: wallet.address,
         micros: 588_000,
         to: "0x000000000000000000000000000000000000dEaD",
       }),
-      chain.pay({ from: wallet.address as Hex, micros: 588_000, token: "USDG" }), // not a Base token
-      chain.pay({ from: wallet.address as Hex, micros: 588_000, ageMs: 25 * 60 * 60 * 1000 }),
+      chain.pay({ from: wallet.address, micros: 588_000, token: "USDG" }), // not a Base token
+      chain.pay({ from: wallet.address, micros: 588_000, ageMs: 25 * 60 * 60 * 1000 }),
     ];
-    const reverted = chain.pay({ from: wallet.address as Hex, micros: 588_000 });
+    const reverted = chain.pay({ from: wallet.address, micros: 588_000 });
     chain.txs.get(reverted)!.status = "reverted";
     cases.push(reverted);
     for (const tx of cases) {
@@ -487,8 +416,8 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("one payment, one pass: a retry gets the same answer, a lost pass can be replaced once, then never", async () => {
-    const wallet = evmWallet();
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 588_000 });
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const tx = chain.pay({ from: wallet.address, micros: 588_000 });
     const first = await blind(V4);
     const a = (await (
       await post("/api/pay/redeem", await redeemBody(first, tx, wallet))
@@ -515,8 +444,8 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("the same transaction can't be used on another chain's ledger entry to get a second pass", async () => {
-    const wallet = evmWallet();
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 588_000, chain: "base" });
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const tx = chain.pay({ from: wallet.address, micros: 588_000, chain: "base" });
     expect(
       (await post("/api/pay/redeem", await redeemBody(await blind(V4), tx, wallet, "base"))).status,
     ).toBe(200);
@@ -528,8 +457,8 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("a 503 when the chain can't be reached, nothing recorded", async () => {
-    const wallet = evmWallet();
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 588_000 });
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const tx = chain.pay({ from: wallet.address, micros: 588_000 });
     chain.down = true;
     const res = await post("/api/pay/redeem", await redeemBody(await blind(V4), tx, wallet));
     expect(res.status).toBe(503);
@@ -538,8 +467,8 @@ describe("POST /api/pay/redeem", () => {
   });
 
   it("refuses a key id that isn't the variant's key", async () => {
-    const wallet = evmWallet();
-    const tx = chain.pay({ from: wallet.address as Hex, micros: 588_000 });
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const tx = chain.pay({ from: wallet.address, micros: 588_000 });
     const body = await redeemBody(await blind(V4), tx, wallet);
     const res = await post("/api/pay/redeem", { ...body, keyId: "x".repeat(43) });
     expect(res.status).toBe(409);
@@ -715,201 +644,169 @@ describe("the AI model", () => {
   });
 });
 
-describe("paying on Solana", () => {
-  it("USDC to Poof's Solana address opens the room, and the ledger says so", async () => {
-    const wallet = await solanaWallet();
+describe("paying in ETH", () => {
+  const getQuote = async (chainName: ChainName = "base", variant: Variant = V4) =>
+    (await (
+      await call(`/api/pay/quote?chain=${chainName}&variant=${variantId(variant)}`)
+    ).json()) as QuoteResponse;
+
+  async function ethBody(
+    b: Blinded,
+    tx: Hex,
+    wallet: PrivateKeyAccount,
+    quote: string | undefined,
+    chainName: ChainName = "base",
+  ) {
+    return { ...(await redeemBody(b, tx, wallet, chainName, "ETH")), ...(quote ? { quote } : {}) };
+  }
+
+  it("quotes the site's dollar price in ETH at the Chainlink price, held 15 minutes", async () => {
+    const q = await getQuote();
+    expect(q).toMatchObject({
+      chain: "base",
+      variant: "3600-4",
+      usdMicros: 588_000,
+      ethUsd: "270723000000",
+    });
+    expect(BigInt(q.wei)).toBe(weiForUsd(588_000, chain.ethUsd));
+    // $0.588 / $2,707.23 ≈ 0.0002172 ETH, rounded up to a whole gwei.
+    expect(Number(q.wei) / 1e18).toBeCloseTo(0.588 / 2707.23, 8);
+    expect(BigInt(q.wei) % 10n ** 9n).toBe(0n);
+    expect(q.expiresAt - Date.now()).toBeGreaterThan(14 * 60 * 1000);
+    expect(q.expiresAt - Date.now()).toBeLessThanOrEqual(15 * 60 * 1000);
+  });
+
+  it("the quoted ETH opens the room, and the ledger has the ETH and dollar amounts and the price used", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
     const b = await blind(V4);
-    const tx = solana.pay({ from: wallet.address, micros: 588_000 });
-    const res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet, "solana"));
+    const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei) });
+    const res = await post("/api/pay/redeem", await ethBody(b, tx, wallet, q.quote));
     expect(res.status).toBe(200);
     const pass = await finish(b, ((await res.json()) as { blindSignature: string }).blindSignature);
     expect(
       (await post("/api/rooms", { ownerHash: (await newOwner()).ownerHash, pass })).status,
     ).toBe(200);
-    expect(await ledger(tx)).toMatchObject({
-      chain: "solana",
-      tx_hash: tx,
-      token: "USDC",
-      variant: "3600-4",
+    const row = await ledger(tx);
+    expect(row).toMatchObject({
+      token: "ETH",
       required_micros: 588_000,
-      received_micros: 588_000,
+      required_units: q.wei,
+      received_units: q.wei,
+      eth_usd: "270723000000",
       status: "issued",
     });
+    expect(row!.received_micros as number).toBeGreaterThanOrEqual(588_000);
   });
 
-  it("the signed text keeps the signature's case (base58), unlike EVM hashes", async () => {
-    const wallet = await solanaWallet();
-    const b = await blind(V4);
-    const tx = solana.pay({ from: wallet.address, micros: 588_000 });
-    const message = redeemMessage({
-      chain: "solana",
-      txHash: tx,
-      variant: V4,
-      blindedHash: await hexSha256(b.blindedMsg),
-    });
-    expect(message).toContain(`Transaction: ${tx}\n`);
-    expect(fromBase58(tx)).toHaveLength(64);
-  });
-
-  it("says 'pending' until the transaction is finalized", async () => {
-    const wallet = await solanaWallet();
-    const b = await blind(V4);
-    const unknown = toBase58(crypto.getRandomValues(new Uint8Array(64)));
-    let res = await post("/api/pay/redeem", await redeemBody(b, unknown, wallet, "solana"));
-    expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ status: "pending", confirmations: 0, needed: 32 });
-
-    const tx = solana.pay({
-      from: wallet.address,
-      micros: 588_000,
-      finalized: false,
-      confirmations: 10,
-    });
-    res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet, "solana"));
-    expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ status: "pending", confirmations: 10, needed: 32 });
-    solana.txs.get(tx)!.finalized = true;
-    res = await post("/api/pay/redeem", await redeemBody(b, tx, wallet, "solana"));
-    expect(res.status).toBe(200);
-  });
-
-  it("too little: refused, and recorded", async () => {
-    const wallet = await solanaWallet();
-    const tx = solana.pay({ from: wallet.address, micros: 500_000 });
-    const res = await post(
-      "/api/pay/redeem",
-      await redeemBody(await blind(V4), tx, wallet, "solana"),
-    );
+  it("too little ETH: refused, and recorded in ETH and dollars", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei) / 2n });
+    const res = await post("/api/pay/redeem", await ethBody(await blind(V4), tx, wallet, q.quote));
     expect(res.status).toBe(402);
     expect(await res.json()).toMatchObject({
       error: {
         code: "payment_underpaid",
-        message: "This quant-room costs $0.588 USDC; $0.50 USDC arrived.",
+        message: expect.stringMatching(
+          /^This quant-room costs 0\.000218 ETH; 0\.000109 ETH arrived\.$/,
+        ),
       },
     });
-    expect(await ledger(tx)).toMatchObject({ status: "underpaid", received_micros: 500_000 });
+    expect(await ledger(tx)).toMatchObject({ status: "underpaid", required_units: q.wei });
   });
 
-  it("only the wallet whose USDC went to Poof can redeem: not a fee payer, not a copied signature", async () => {
-    const payer = await solanaWallet();
-    const sponsor = await solanaWallet();
-    const thief = await solanaWallet();
-    // The sponsor signed the transaction (it paid the fee), but the USDC came from the payer.
-    const tx = solana.pay({ from: payer.address, micros: 588_000, feePayer: sponsor.address });
-    let res = await post(
-      "/api/pay/redeem",
-      await redeemBody(await blind(V4), tx, sponsor, "solana"),
-    );
+  it("needs its own quote, untouched, for this chain and quant-room", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei) });
+    const [payload, mac] = q.quote.split(".");
+    const forged = JSON.parse(new TextDecoder().decode(fromBase64Url(payload!))) as { w: string };
+    forged.w = "1";
+    const tampered = `${toBase64Url(new TextEncoder().encode(JSON.stringify(forged)))}.${mac}`;
+    for (const quote of [
+      undefined,
+      tampered,
+      (await getQuote("base", { lifetime: 3600, people: 2, ai: false })).quote,
+      (await getQuote("ethereum")).quote,
+    ]) {
+      const res = await post("/api/pay/redeem", await ethBody(await blind(V4), tx, wallet, quote));
+      expect(res.status).toBe(422);
+    }
+    expect(await ledger(tx)).toBeNull();
+  });
+
+  it("ETH that arrives after the quote ran out is recorded as late, not accepted", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const tx = chain.payEth({
+      from: wallet.address,
+      wei: BigInt(q.wei),
+      minedAt: q.expiresAt + 30_000,
+    });
+    const res = await post("/api/pay/redeem", await ethBody(await blind(V4), tx, wallet, q.quote));
     expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      error: { message: expect.stringContaining("after its ETH price ran out") },
+    });
+    expect(await ledger(tx)).toMatchObject({ status: "late", received_units: q.wei });
+  });
+
+  it("ETH sent elsewhere, or from another wallet than the one that signs, doesn't count", async () => {
+    const wallet = privateKeyToAccount(generatePrivateKey());
+    const other = privateKeyToAccount(generatePrivateKey());
+    const q = await getQuote();
+    const elsewhere = chain.payEth({
+      from: wallet.address,
+      wei: BigInt(q.wei),
+      to: "0x000000000000000000000000000000000000dEaD",
+    });
+    expect(
+      (await post("/api/pay/redeem", await ethBody(await blind(V4), elsewhere, wallet, q.quote)))
+        .status,
+    ).toBe(422);
+    const fromOther = chain.payEth({ from: other.address, wei: BigInt(q.wei) });
+    const res = await post(
+      "/api/pay/redeem",
+      await ethBody(await blind(V4), fromOther, wallet, q.quote),
+    );
     expect(await res.json()).toMatchObject({
       error: { code: "payment_invalid", message: expect.stringContaining("another wallet") },
     });
-    // Someone who saw the transaction on-chain, signing as themselves.
-    res = await post("/api/pay/redeem", await redeemBody(await blind(V4), tx, thief, "solana"));
-    expect(res.status).toBe(422);
-    // Claiming to be the payer without the payer's key.
-    const body = await redeemBody(await blind(V4), tx, thief, "solana");
-    res = await post("/api/pay/redeem", { ...body, payer: payer.address });
-    expect(await res.json()).toMatchObject({
-      error: { code: "payment_invalid", message: "The wallet signature doesn't match." },
-    });
-    expect(await ledger(tx)).toBeNull();
-    // The payer can.
-    res = await post("/api/pay/redeem", await redeemBody(await blind(V4), tx, payer, "solana"));
-    expect(res.status).toBe(200);
   });
 
-  it("refuses a failed transaction, USDC sent elsewhere, another token, and an old payment", async () => {
-    const wallet = await solanaWallet();
-    const cases = [
-      solana.pay({ from: wallet.address, micros: 588_000, failed: true }),
-      solana.pay({ from: wallet.address, micros: 588_000, to: toBase58(new Uint8Array(32)) }),
-      solana.pay({
-        from: wallet.address,
-        micros: 588_000,
-        mint: toBase58(new Uint8Array(32).fill(7)),
-      }),
-      solana.pay({ from: wallet.address, micros: 588_000, ageMs: 25 * 60 * 60 * 1000 }),
-    ];
-    for (const tx of cases) {
-      const res = await post(
-        "/api/pay/redeem",
-        await redeemBody(await blind(V4), tx, wallet, "solana"),
-      );
-      expect(res.status).toBe(422);
-      expect(await ledger(tx)).toBeNull();
+  it("works on Ethereum and Robinhood Chain too", async () => {
+    for (const chainName of ["ethereum", "robinhood"] as const) {
+      const wallet = privateKeyToAccount(generatePrivateKey());
+      const q = await getQuote(chainName);
+      expect(q.chain).toBe(chainName);
+      const tx = chain.payEth({ from: wallet.address, wei: BigInt(q.wei), chain: chainName });
+      expect(
+        (
+          await post(
+            "/api/pay/redeem",
+            await ethBody(await blind(V4), tx, wallet, q.quote, chainName),
+          )
+        ).status,
+      ).toBe(200);
     }
-    // A failed transaction that never finalizes isn't "pending" forever either.
-    const failed = solana.pay({
-      from: wallet.address,
-      micros: 588_000,
-      failed: true,
-      finalized: false,
-    });
-    expect(
-      (await post("/api/pay/redeem", await redeemBody(await blind(V4), failed, wallet, "solana")))
-        .status,
-    ).toBe(422);
   });
 
-  it("a 503 when Solana can't be reached, nothing recorded", async () => {
-    const wallet = await solanaWallet();
-    const tx = solana.pay({ from: wallet.address, micros: 588_000 });
-    solana.down = true;
-    const res = await post(
-      "/api/pay/redeem",
-      await redeemBody(await blind(V4), tx, wallet, "solana"),
-    );
+  it("no fresh ETH price: no quote (503)", async () => {
+    chain.ethUsdUpdatedAt = Date.now() - 3 * 60 * 60 * 1000;
+    const res = await call("/api/pay/quote?chain=base&variant=3600-4");
     expect(res.status).toBe(503);
-    expect(await ledger(tx)).toBeNull();
+    expect(await res.json()).toMatchObject({ error: { code: "chain_unavailable" } });
   });
 
-  it("ids have to fit the chain: EVM ids on Solana, or Solana ids on Base, aren't a redemption", async () => {
-    const evm = evmWallet();
-    const sol = await solanaWallet();
-    const evmTx = chain.pay({ from: evm.address as Hex, micros: 588_000 });
-    const solTx = solana.pay({ from: sol.address, micros: 588_000 });
-    expect(
-      (await post("/api/pay/redeem", await redeemBody(await blind(V4), evmTx, evm, "solana")))
-        .status,
-    ).toBe(400);
-    expect(
-      (await post("/api/pay/redeem", await redeemBody(await blind(V4), solTx, sol, "base"))).status,
-    ).toBe(400);
-    // USDG isn't a Solana token.
-    const res = await post(
-      "/api/pay/redeem",
-      await redeemBody(await blind(V4), solTx, sol, "solana", "USDG"),
-    );
-    expect(await res.json()).toMatchObject({
-      error: { code: "payment_invalid", message: "USDG isn't accepted on Solana." },
-    });
-  });
-
-  it("without Poof's Solana address, Solana payments are refused", async () => {
-    const wallet = await solanaWallet();
-    const tx = solana.pay({ from: wallet.address, micros: 588_000 });
-    const res = await call(
-      "/api/pay/redeem",
-      {
-        method: "POST",
-        body: JSON.stringify(await redeemBody(await blind(V4), tx, wallet, "solana")),
-      },
-      { ...env, PAY_TREASURY_SOLANA: "" } as unknown as Env,
-    );
-    expect(res.status).toBe(422);
-    expect(await ledger(tx)).toBeNull();
-  });
-});
-
-describe("base58", () => {
-  it("round-trips, keeps leading zeros, and refuses other characters", () => {
-    const bytes = crypto.getRandomValues(new Uint8Array(64));
-    expect(fromBase58(toBase58(bytes))).toEqual(bytes);
-    expect(toBase58(new Uint8Array([0, 0, 1]))).toBe("112");
-    expect(fromBase58("112")).toEqual(new Uint8Array([0, 0, 1]));
-    expect(toBase58(new Uint8Array(0))).toBe("");
-    expect(fromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")).toHaveLength(32);
-    expect(() => fromBase58("0OIl")).toThrow();
+  it("refuses odd quote requests", async () => {
+    for (const qs of [
+      "chain=solana&variant=3600-4",
+      "chain=base&variant=3600-11",
+      "chain=base&variant=3600-1",
+      "variant=3600-4",
+    ]) {
+      expect((await call(`/api/pay/quote?${qs}`)).status).toBe(400);
+    }
   });
 });

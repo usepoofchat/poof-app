@@ -101,41 +101,38 @@ export function formatUsd(micros: number): string {
 
 // ── Networks and tokens ─────────────────────────────────────────────────────
 
-export const CHAINS = ["ethereum", "base", "robinhood", "solana"] as const;
+export const CHAINS = ["ethereum", "base", "robinhood"] as const;
 export type ChainName = (typeof CHAINS)[number];
 
-/** USD stablecoins, 6 decimals on every chain: one unit is one micro-dollar. */
-export const TOKENS = ["USDC", "USDG"] as const;
+/** USD stablecoins (6 decimals) and ETH, the chains' own coin (18 decimals). */
+export const TOKENS = ["USDC", "USDG", "ETH"] as const;
 export type TokenSymbol = (typeof TOKENS)[number];
-export const TOKEN_DECIMALS = 6;
 
-/** How a chain works: EVM (Ethereum and its kin, 0x… addresses) or Solana (base58 addresses). */
-export const CHAIN_KINDS = ["evm", "solana"] as const;
-export type ChainKind = (typeof CHAIN_KINDS)[number];
+/** ETH isn't a contract: it's the chain's native coin. */
+export const NATIVE = "native" as const;
 
 export interface ChainConfig {
   name: ChainName;
-  kind: ChainKind;
   label: string;
-  /** EIP-155 chain id; null on Solana. */
-  chainId: number | null;
-  /**
-   * EVM: blocks on top of the payment's block before it counts. Solana: the payment must be
-   * finalized, which takes about this many slots (around 15 seconds).
-   */
+  chainId: number;
+  /** Blocks on top of the payment's block before it counts. */
   confirmations: number;
-  /** Public RPCs the server reads through, tried in order. */
+  /** Public RPCs, tried in order. */
   rpcUrls: readonly string[];
   explorer: string;
-  /** Stablecoin contracts (EVM, 0x…) or mints (Solana, base58), 6 decimals, checked on-chain. */
-  tokens: Partial<Record<TokenSymbol, string>>;
+  /** ERC-20 stablecoin contracts (6 decimals, checked on-chain), and ETH as NATIVE. */
+  tokens: Partial<Record<TokenSymbol, `0x${string}` | typeof NATIVE>>;
 }
+
+export const TOKEN_DECIMALS = 6;
+export const ETH_DECIMALS = 18;
+export const decimalsOf = (symbol: TokenSymbol): number =>
+  symbol === "ETH" ? ETH_DECIMALS : TOKEN_DECIMALS;
 
 /** Mainnet only: payments are never accepted on a testnet. */
 export const CHAIN_CONFIG: Record<ChainName, ChainConfig> = {
   ethereum: {
     name: "ethereum",
-    kind: "evm",
     label: "Ethereum",
     chainId: 1,
     confirmations: 2,
@@ -145,11 +142,10 @@ export const CHAIN_CONFIG: Record<ChainName, ChainConfig> = {
       "https://cloudflare-eth.com",
     ],
     explorer: "https://etherscan.io",
-    tokens: { USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+    tokens: { USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", ETH: NATIVE },
   },
   base: {
     name: "base",
-    kind: "evm",
     label: "Base",
     chainId: 8453,
     confirmations: 1,
@@ -159,65 +155,63 @@ export const CHAIN_CONFIG: Record<ChainName, ChainConfig> = {
       "https://base.drpc.org",
     ],
     explorer: "https://basescan.org",
-    tokens: { USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" },
+    tokens: { USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", ETH: NATIVE },
   },
   robinhood: {
     name: "robinhood",
-    kind: "evm",
     label: "Robinhood Chain",
     chainId: 4663,
     confirmations: 1,
     rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"],
     explorer: "https://robinhoodchain.blockscout.com",
-    tokens: { USDG: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
-  },
-  solana: {
-    name: "solana",
-    kind: "solana",
-    label: "Solana",
-    chainId: null,
-    confirmations: 32,
-    rpcUrls: ["https://solana-rpc.publicnode.com", "https://api.mainnet-beta.solana.com"],
-    explorer: "https://solscan.io",
-    tokens: { USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" },
+    tokens: { USDG: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", ETH: NATIVE },
   },
 };
 
 /** A payment counts only if it was made at most this long before it is redeemed. */
 export const PAYMENT_MAX_AGE_SECONDS = 24 * 60 * 60;
 
-// ── Ids on each kind of chain ───────────────────────────────────────────────
-
-/** 0x and 40 hex digits: an EVM address. */
-export const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-/** 0x and 64 hex digits: an EVM transaction hash. */
-export const EVM_TX_HASH = /^0x[0-9a-fA-F]{64}$/;
-const EVM_SIGNATURE = /^0x[0-9a-fA-F]+$/;
-/** base58 of 32 bytes: a Solana address. */
-export const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-/** base58 of 64 bytes: a Solana transaction signature (its id), or an ed25519 signature. */
-export const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
-
-/** Do the transaction id, the payer and the wallet signature have the chain's own formats? */
-export function paymentIdsFit(r: {
-  chain: ChainName;
-  txHash: string;
-  payer: string;
-  signature: string;
-}): boolean {
-  return CHAIN_CONFIG[r.chain].kind === "evm"
-    ? EVM_TX_HASH.test(r.txHash) && EVM_ADDRESS.test(r.payer) && EVM_SIGNATURE.test(r.signature)
-    : SOLANA_SIGNATURE.test(r.txHash) &&
-        SOLANA_ADDRESS.test(r.payer) &&
-        SOLANA_SIGNATURE.test(r.signature);
-}
+// ── ETH: a quote at the market price ────────────────────────────────────────
 
 /**
- * The transaction id as it goes into messages and the ledger: EVM hashes in lower case, Solana
- * signatures as they are (base58 is case-sensitive).
+ * Chainlink ETH/USD price feeds (8 decimals), read on-chain, tried in order. ETH is the same coin on
+ * every chain here, so one price serves all three.
  */
-export function canonicalTxId(chain: ChainName, txHash: string): string {
-  return CHAIN_CONFIG[chain].kind === "evm" ? txHash.toLowerCase() : txHash;
+export const ETH_USD_FEEDS: readonly { chain: ChainName; address: `0x${string}` }[] = [
+  { chain: "ethereum", address: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419" },
+  { chain: "base", address: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70" },
+];
+export const ETH_USD_DECIMALS = 8;
+/** A feed answer older than this isn't used (the feeds update at least hourly). */
+export const ETH_USD_MAX_AGE_SECONDS = 2 * 60 * 60;
+/** How long an ETH quote holds: the payment must be mined before it ends. */
+export const QUOTE_TTL_SECONDS = 15 * 60;
+
+/**
+ * The ETH amount for a dollar price at `ethUsd` (USD per ETH, 8 decimals), in wei, rounded up to a
+ * whole gwei so it never comes out a hair under the price.
+ */
+export function weiForUsd(usdMicros: number, ethUsd: bigint): bigint {
+  if (ethUsd <= 0n) throw new Error("no ETH price");
+  // wei = usd × 1e18 / (ethUsd / 1e8) = micros × 1e20 / ethUsd
+  const wei = (BigInt(usdMicros) * 10n ** 20n + ethUsd - 1n) / ethUsd;
+  const gwei = 10n ** 9n;
+  return ((wei + gwei - 1n) / gwei) * gwei;
+}
+
+/** What `wei` is worth at `ethUsd`, in micro-dollars (rounded down). */
+export function usdMicrosForWei(wei: bigint, ethUsd: bigint): number {
+  const micros = (wei * ethUsd) / 10n ** 20n;
+  return micros > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(micros);
+}
+
+/** "0.000217 ETH": wei shown with up to 6 decimals, rounded up. */
+export function formatEth(wei: bigint): string {
+  const step = 10n ** 12n; // 1e-6 ETH
+  const units = (wei + step - 1n) / step;
+  const whole = units / 1_000_000n;
+  const frac = (units % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return `${whole}${frac ? `.${frac}` : ""} ETH`;
 }
 
 // ── Passes ──────────────────────────────────────────────────────────────────
@@ -228,12 +222,17 @@ export const PASS_MESSAGE_BYTES = 32;
 export const PASS_KEY_BITS = 2048;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 
+const hexHash = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
+const hexAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
+const hexSignature = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]+$/)
+  .max(20_000);
 const b64url = (max: number) => z.string().min(1).max(max).regex(B64URL);
 
 /**
- * The text the paying wallet signs (EVM: EIP-191 personal_sign; Solana: ed25519 over the UTF-8
- * bytes). It ties this redemption to the address the payment came from, so a transaction seen
- * on-chain can't be redeemed by someone else.
+ * The text the paying wallet signs (EIP-191 personal_sign). It ties this redemption to the address
+ * the payment came from, so a transaction hash seen on-chain can't be redeemed by someone else.
  */
 export function redeemMessage(r: {
   chain: ChainName;
@@ -244,30 +243,44 @@ export function redeemMessage(r: {
   return [
     "Poof: unlock a Super Quant-Room",
     `Chain: ${r.chain}`,
-    `Transaction: ${canonicalTxId(r.chain, r.txHash)}`,
+    `Transaction: ${r.txHash.toLowerCase()}`,
     `Quant-room: ${variantId(r.variant)}`,
     `Pass: ${r.blindedHash}`,
   ].join("\n");
 }
 
 /** POST /api/pay/redeem */
-export const redeemRequestSchema = z
-  .object({
-    chain: z.enum(CHAINS),
-    token: z.enum(TOKENS),
-    /** The transaction: its hash (EVM) or its signature (Solana). */
-    txHash: z.string().min(1).max(100),
-    variant: variantSchema,
-    keyId: b64url(64),
-    /** The blinded pass message (RFC 9474 Blind), base64url. */
-    blindedMsg: b64url(400),
-    /** The address the payment came from, which signed `redeemMessage(...)`. */
-    payer: z.string().min(1).max(64),
-    /** EVM: the personal_sign signature (hex). Solana: the ed25519 signature (base58). */
-    signature: z.string().min(1).max(20_000),
-  })
-  .refine(paymentIdsFit, "the ids don't fit the chain");
+export const redeemRequestSchema = z.object({
+  chain: z.enum(CHAINS),
+  token: z.enum(TOKENS),
+  txHash: hexHash,
+  variant: variantSchema,
+  keyId: b64url(64),
+  /** The blinded pass message (RFC 9474 Blind), base64url. */
+  blindedMsg: b64url(400),
+  /** personal_sign of `redeemMessage(...)` by the address the payment came from. */
+  payer: hexAddress,
+  signature: hexSignature,
+  /** ETH only: the quote the payment was made against (from /api/pay/quote). */
+  quote: z.string().min(1).max(1000).optional(),
+});
 export type RedeemRequest = z.infer<typeof redeemRequestSchema>;
+
+/** GET /api/pay/quote?chain=…&variant=…: what to send in ETH right now, signed by Poof. */
+export const quoteResponseSchema = z.object({
+  chain: z.enum(CHAINS),
+  variant: z.string(),
+  usdMicros: z.number().int().positive(),
+  /** USD per ETH, 8 decimals (Chainlink), as a decimal string. */
+  ethUsd: z.string().regex(/^\d+$/),
+  /** The amount to send, in wei, as a decimal string. */
+  wei: z.string().regex(/^\d+$/),
+  /** Unix ms: the payment must be mined before this. */
+  expiresAt: z.number().int(),
+  /** Opaque, signed by Poof: send it back with the redemption. */
+  quote: z.string().min(1).max(1000),
+});
+export type QuoteResponse = z.infer<typeof quoteResponseSchema>;
 
 export const redeemResponseSchema = z.discriminatedUnion("status", [
   z.object({
@@ -285,34 +298,25 @@ export const payKeySchema = z.object({
   keyId: b64url(64),
   spki: b64url(1200),
 });
-const chainAddress = z.string().min(1).max(64);
-export const payChainSchema = z
-  .object({
-    name: z.enum(CHAINS),
-    kind: z.enum(CHAIN_KINDS),
-    label: z.string(),
-    /** EIP-155 chain id; null on Solana. */
-    chainId: z.number().int().nullable(),
-    confirmations: z.number().int(),
-    explorer: z.string(),
-    /** Poof's address on this chain: where to pay. */
-    treasury: chainAddress,
-    tokens: z.array(
-      z.object({
-        symbol: z.enum(TOKENS),
-        /** The stablecoin's contract (EVM) or mint (Solana). */
-        address: chainAddress,
-        decimals: z.number().int(),
-      }),
-    ),
-  })
-  .refine((c) => {
-    const fits = c.kind === "evm" ? EVM_ADDRESS : SOLANA_ADDRESS;
-    return fits.test(c.treasury) && c.tokens.every((t) => fits.test(t.address));
-  }, "the addresses don't fit the chain");
-export type PayChain = z.infer<typeof payChainSchema>;
 export const payConfigSchema = z.object({
-  chains: z.array(payChainSchema),
+  treasury: hexAddress,
+  chains: z.array(
+    z.object({
+      name: z.enum(CHAINS),
+      label: z.string(),
+      chainId: z.number().int(),
+      confirmations: z.number().int(),
+      explorer: z.string(),
+      tokens: z.array(
+        z.object({
+          symbol: z.enum(TOKENS),
+          /** null for ETH (the chain's own coin). */
+          address: hexAddress.nullable(),
+          decimals: z.number().int(),
+        }),
+      ),
+    }),
+  ),
   keys: z.array(payKeySchema),
 });
 export type PayConfig = z.infer<typeof payConfigSchema>;

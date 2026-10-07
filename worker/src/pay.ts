@@ -1,18 +1,17 @@
 import {
   CHAIN_CONFIG,
   CHAINS,
+  EVM_ADDRESS,
   MAX_JSON_BODY_BYTES,
-  NATIVE,
-  decimalsOf,
-  formatEth,
+  SOLANA_ADDRESS,
+  TOKEN_DECIMALS,
+  canonicalTxId,
   formatUsd,
-  parseVariantId,
   passSchema,
   priceMicros,
   purchasableVariants,
   redeemMessage,
   redeemRequestSchema,
-  usdMicrosForWei,
   variantId,
   type ChainName,
   type Pass,
@@ -21,41 +20,49 @@ import {
   type TokenSymbol,
   type Variant,
 } from "@poof/protocol";
-import type { Hex } from "viem";
 import { apiError, isRateLimited, json, readJson } from "./http.ts";
 import { blindSign, passKeyFor, verifyPassSignature, type PassKeyRecord } from "./pass-keys.ts";
-import { checkPayment, readEthUsd, viemReader, type ChainReader } from "./payments.ts";
-import { makeQuote, readQuote } from "./quotes.ts";
+import { checkPayment, solanaReader, viemReader, type Readers } from "./payments.ts";
 import { fromBase64Url, toBase64Url } from "./util.ts";
 
 /**
- * Payments for Super Quant-Rooms: GET /api/pay/config, GET /api/pay/quote (ETH) and
- * POST /api/pay/redeem.
+ * Payments for Super Quant-Rooms: GET /api/pay/config and POST /api/pay/redeem.
  *
  * The ledger (D1 `payments`) records, per redeemed transaction, the price and what arrived. It never
  * records the quant-room: passes are blind-signed, so the server can't tell which payment a room
  * came from.
  */
 
-type PayEnv = Pick<Env, "LEDGER" | "PASS_MASTER_KEY" | "PAY_TREASURY" | "RL_PAY">;
+type PayEnv = Pick<
+  Env,
+  "LEDGER" | "PASS_MASTER_KEY" | "PAY_TREASURY" | "PAY_TREASURY_SOLANA" | "RL_PAY"
+>;
 
-/** Real chain reads by default; tests swap in a fake chain. */
-let readerFor = (chain: (typeof CHAINS)[number]): ChainReader => viemReader(CHAIN_CONFIG[chain]);
-export function setChainReaderForTests(factory: typeof readerFor): void {
-  readerFor = factory;
+/** Real chain reads by default; tests swap in fake chains. */
+let readers: Readers = {
+  evm: (chain) => viemReader(CHAIN_CONFIG[chain]),
+  solana: () => solanaReader(CHAIN_CONFIG.solana),
+};
+export function setChainReadersForTests(fakes: Readers): void {
+  readers = fakes;
 }
 
-const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-
-/** Payments are on only when Poof's address and the pass master key are configured. */
+/** Payments are on only when Poof's EVM address and the pass master key are configured. */
 function payEnabled(
   env: PayEnv,
 ): env is PayEnv & { PAY_TREASURY: string; PASS_MASTER_KEY: string } {
   return (
-    ADDRESS.test(env.PAY_TREASURY ?? "") &&
+    EVM_ADDRESS.test(env.PAY_TREASURY ?? "") &&
     typeof env.PASS_MASTER_KEY === "string" &&
     env.PASS_MASTER_KEY.length >= 43
   );
+}
+
+/** Poof's address on a chain, or null if that chain isn't open (no address configured). */
+function treasuryFor(env: PayEnv & { PAY_TREASURY: string }, chain: ChainName): string | null {
+  if (CHAIN_CONFIG[chain].kind === "evm") return env.PAY_TREASURY;
+  const solana: string = env.PAY_TREASURY_SOLANA ?? "";
+  return SOLANA_ADDRESS.test(solana) ? solana : null;
 }
 
 function unavailable(): Response {
@@ -66,21 +73,24 @@ export async function payConfig(env: PayEnv): Promise<Response> {
   if (!payEnabled(env)) return unavailable();
   const keys = await Promise.all(purchasableVariants().map((v) => passKeyFor(env, v)));
   const body: PayConfig = {
-    treasury: env.PAY_TREASURY,
-    chains: CHAINS.map((name) => {
+    chains: CHAINS.flatMap((name) => {
       const c = CHAIN_CONFIG[name];
-      return {
-        name,
-        label: c.label,
-        chainId: c.chainId,
-        confirmations: c.confirmations,
-        explorer: c.explorer,
-        tokens: (Object.entries(c.tokens) as [TokenSymbol, string][]).map(([symbol, address]) => ({
-          symbol,
-          address: address === NATIVE ? null : address,
-          decimals: decimalsOf(symbol),
-        })),
-      };
+      const treasury = treasuryFor(env, name);
+      if (!treasury) return [];
+      return [
+        {
+          name,
+          kind: c.kind,
+          label: c.label,
+          chainId: c.chainId,
+          confirmations: c.confirmations,
+          explorer: c.explorer,
+          treasury,
+          tokens: (Object.entries(c.tokens) as [TokenSymbol, string][]).map(
+            ([symbol, address]) => ({ symbol, address, decimals: TOKEN_DECIMALS }),
+          ),
+        },
+      ];
     }),
     keys: keys.map((k) => ({ variant: k.variantId, keyId: k.keyId, spki: k.spki })),
   };
@@ -89,22 +99,6 @@ export async function payConfig(env: PayEnv): Promise<Response> {
 
 const chainUnavailable = () =>
   apiError("chain_unavailable", "Couldn't reach the blockchain. Try again in a moment.", 503);
-
-/** GET /api/pay/quote?chain=base&variant=3600-4: how much ETH, at today's price, held 15 minutes. */
-export async function payQuote(request: Request, env: PayEnv, url: URL): Promise<Response> {
-  if (!payEnabled(env)) return unavailable();
-  if (await isRateLimited(env.RL_PAY, request)) {
-    return apiError("rate_limited", "Too many attempts. Try again soon.", 429);
-  }
-  const chain = url.searchParams.get("chain") as ChainName | null;
-  const variant = parseVariantId(url.searchParams.get("variant") ?? "");
-  if (!chain || !CHAINS.includes(chain) || CHAIN_CONFIG[chain].tokens.ETH !== NATIVE || !variant) {
-    return apiError("invalid_request", "Expected ?chain=…&variant=….", 400);
-  }
-  const ethUsd = await readEthUsd(readerFor).catch(() => null);
-  if (ethUsd === null) return chainUnavailable();
-  return json(await makeQuote(env.PASS_MASTER_KEY, chain, variant, ethUsd));
-}
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
@@ -115,17 +109,8 @@ interface PaymentRow {
   status: "issued" | "underpaid" | "late";
   blinded_hash: string | null;
   reissued: number;
-  token: TokenSymbol;
-  required_units: string | null;
-  received_units: string | null;
-}
-
-/** What's due, in the asset's own units, and what that is in dollars. */
-interface Due {
-  units: bigint;
-  usdMicros: number;
-  ethUsd: bigint | null;
-  minedBefore?: number;
+  required_micros: number;
+  received_micros: number;
 }
 
 export async function redeem(request: Request, env: PayEnv): Promise<Response> {
@@ -140,7 +125,8 @@ export async function redeem(request: Request, env: PayEnv): Promise<Response> {
   const r = parsed.data;
   const variant = r.variant;
 
-  if (!CHAIN_CONFIG[r.chain].tokens[r.token]) {
+  const treasury = treasuryFor(env, r.chain);
+  if (!treasury || !CHAIN_CONFIG[r.chain].tokens[r.token]) {
     return apiError(
       "payment_invalid",
       `${r.token} isn't accepted on ${CHAIN_CONFIG[r.chain].label}.`,
@@ -153,42 +139,21 @@ export async function redeem(request: Request, env: PayEnv): Promise<Response> {
 
   const blinded = fromBase64Url(r.blindedMsg);
   const blindedHash = await sha256Hex(blinded);
-  const txHash = r.txHash.toLowerCase() as Hex;
-
-  let due: Due;
-  if (r.token === "ETH") {
-    const quote = r.quote ? await readQuote(env.PASS_MASTER_KEY, r.quote) : null;
-    if (!quote || quote.chain !== r.chain || quote.variantId !== variantId(variant)) {
-      return apiError(
-        "payment_invalid",
-        "An ETH payment needs the price quote it was made with.",
-        422,
-      );
-    }
-    due = {
-      units: quote.wei,
-      usdMicros: quote.usdMicros,
-      ethUsd: quote.ethUsd,
-      minedBefore: quote.expiresAt,
-    };
-  } else {
-    const micros = priceMicros(variant);
-    due = { units: BigInt(micros), usdMicros: micros, ethUsd: null };
-  }
+  const txHash = canonicalTxId(r.chain, r.txHash);
+  const price = priceMicros(variant);
 
   const check = await checkPayment(
     {
       chain: r.chain,
       token: r.token,
       txHash,
-      treasury: env.PAY_TREASURY,
-      payer: r.payer as Hex,
+      treasury,
+      payer: r.payer,
       message: redeemMessage({ chain: r.chain, txHash, variant, blindedHash }),
-      signature: r.signature as Hex,
-      required: due.units,
-      ...(due.minedBefore !== undefined ? { minedBefore: due.minedBefore } : {}),
+      signature: r.signature,
+      required: BigInt(price),
     },
-    readerFor(r.chain),
+    readers,
   ).catch(() => null);
   if (!check) return chainUnavailable();
 
@@ -213,24 +178,20 @@ export async function redeem(request: Request, env: PayEnv): Promise<Response> {
   }
 
   const now = Date.now();
-  const status = check.status === "ok" ? "issued" : check.status;
-  const receivedMicros =
-    due.ethUsd === null ? Number(check.received) : usdMicrosForWei(check.received, due.ethUsd);
+  const status = check.status === "ok" ? "issued" : "underpaid";
+  const received = Math.min(Number(check.received), Number.MAX_SAFE_INTEGER);
   // First redemption of this transaction: claim it atomically before signing anything.
   const claim = await env.LEDGER.prepare(
-    `INSERT INTO payments (chain, tx_hash, token, variant, required_micros, received_micros, required_units, received_units, eth_usd, status, blinded_hash, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chain, tx_hash) DO NOTHING`,
+    `INSERT INTO payments (chain, tx_hash, token, variant, required_micros, received_micros, status, blinded_hash, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chain, tx_hash) DO NOTHING`,
   )
     .bind(
       r.chain,
       txHash,
       r.token,
       variantId(variant),
-      due.usdMicros,
-      Math.min(receivedMicros, Number.MAX_SAFE_INTEGER),
-      due.units.toString(),
-      check.received.toString(),
-      due.ethUsd?.toString() ?? null,
+      price,
+      received,
       status,
       status === "issued" ? blindedHash : null,
       now,
@@ -240,14 +201,12 @@ export async function redeem(request: Request, env: PayEnv): Promise<Response> {
 
   if (claim.meta.changes === 0) {
     const row = await env.LEDGER.prepare(
-      "SELECT status, blinded_hash, reissued, token, required_units, received_units FROM payments WHERE chain = ? AND tx_hash = ?",
+      "SELECT status, blinded_hash, reissued, required_micros, received_micros FROM payments WHERE chain = ? AND tx_hash = ?",
     )
       .bind(r.chain, txHash)
       .first<PaymentRow>();
     if (!row || row.status !== "issued") {
-      const req = row?.required_units ? BigInt(row.required_units) : due.units;
-      const got = row?.received_units ? BigInt(row.received_units) : check.received;
-      return row?.status === "late" ? late(r.token, got) : underpaid(r.token, req, got);
+      return underpaid(r.token, row?.required_micros ?? price, row?.received_micros ?? received);
     }
     // The same blinded pass again (a lost response): same answer, nothing new is issued.
     if (row.blinded_hash === blindedHash) return signed(key, blinded);
@@ -263,27 +222,17 @@ export async function redeem(request: Request, env: PayEnv): Promise<Response> {
     return signed(key, blinded);
   }
 
-  if (status === "underpaid") return underpaid(r.token, due.units, check.received);
-  if (status === "late") return late(r.token, check.received);
+  if (status === "underpaid") return underpaid(r.token, price, received);
   return signed(key, blinded);
 }
 
-const amount = (token: TokenSymbol, units: bigint) =>
-  token === "ETH" ? formatEth(units) : `${formatUsd(Number(units))} ${token}`;
+const amount = (token: TokenSymbol, micros: number) => `${formatUsd(micros)} ${token}`;
 
-function underpaid(token: TokenSymbol, required: bigint, received: bigint): Response {
+function underpaid(token: TokenSymbol, required: number, received: number): Response {
   return apiError(
     "payment_underpaid",
     `This quant-room costs ${amount(token, required)}; ${amount(token, received)} arrived.`,
     402,
-  );
-}
-
-function late(token: TokenSymbol, received: bigint): Response {
-  return apiError(
-    "payment_invalid",
-    `${amount(token, received)} arrived after its ETH price ran out (15 minutes). Contact us with the transaction.`,
-    422,
   );
 }
 

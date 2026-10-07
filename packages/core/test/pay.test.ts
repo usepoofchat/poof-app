@@ -63,6 +63,16 @@ describe("prices", () => {
 });
 
 describe("paymentMessage", () => {
+  it("keeps a Solana signature as it is (base58 is case-sensitive)", async () => {
+    const { key } = await signer();
+    const pending = await startPass([key], V);
+    const sig =
+      "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+    const message = await paymentMessage("solana", sig, pending);
+    expect(message.split("\n")[1]).toBe("Chain: solana");
+    expect(message.split("\n")[2]).toBe(`Transaction: ${sig}`);
+  });
+
   it("names the chain, the transaction, the variant and the blinded pass", async () => {
     const { key } = await signer();
     const pending = await startPass([key], V);
@@ -165,46 +175,5 @@ describe("fetchPayConfig / createRoom with a pass", () => {
       code: "pass_invalid",
     });
     expect(sent[0]).toMatchObject({ pass: p, ownerHash: expect.any(String) });
-  });
-});
-
-describe("ETH", () => {
-  it("weiForUsd rounds up to a whole gwei, and formatEth shows it to the micro-ETH, rounded up", async () => {
-    const { weiForUsd, usdMicrosForWei } = await import("@poof/protocol");
-    const { formatEth } = await import("../src/index.ts");
-    const ethUsd = 270_723_000_000n; // $2,707.23
-    const wei = weiForUsd(588_000, ethUsd);
-    expect(wei % 10n ** 9n).toBe(0n);
-    expect(usdMicrosForWei(wei, ethUsd)).toBeGreaterThanOrEqual(588_000);
-    expect(usdMicrosForWei(wei - 10n ** 9n, ethUsd)).toBeLessThan(588_000);
-    expect(formatEth(wei)).toBe("0.000218 ETH");
-    expect(formatEth(10n ** 18n)).toBe("1 ETH");
-    expect(formatEth(15n * 10n ** 17n)).toBe("1.5 ETH");
-  });
-
-  it("fetchEthQuote asks for the chain and variant, and maps a missing price to connection_failed", async () => {
-    const { fetchEthQuote } = await import("../src/index.ts");
-    const urls: string[] = [];
-    const ok: typeof globalThis.fetch = async (u) => {
-      urls.push(u as string);
-      return json({
-        chain: "base",
-        variant: "3600-4",
-        usdMicros: 588_000,
-        ethUsd: "270723000000",
-        wei: "217197000000000",
-        expiresAt: 1,
-        quote: "q.m",
-      });
-    };
-    expect(
-      await fetchEthQuote({ fetch: ok, origin: "https://api.test", chain: "base", variant: V }),
-    ).toMatchObject({ wei: "217197000000000" });
-    expect(urls[0]).toBe("https://api.test/api/pay/quote?chain=base&variant=3600-4");
-    const down: typeof globalThis.fetch = async () =>
-      json({ error: { code: "chain_unavailable", message: "x" } }, 503);
-    await expect(
-      fetchEthQuote({ fetch: down, origin: "", chain: "base", variant: V }),
-    ).rejects.toMatchObject({ code: "connection_failed" });
   });
 });

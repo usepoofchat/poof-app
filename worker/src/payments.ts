@@ -209,23 +209,29 @@ interface RpcSignatureStatus {
   err: unknown;
 }
 
-/** One JSON-RPC call, through the first RPC that answers. */
+/**
+ * One JSON-RPC call, through the first RPC that answers. Public Solana RPCs refuse Workers' shared
+ * addresses now and then, so every RPC gets a few rounds.
+ */
 async function jsonRpc<T>(urls: readonly string[], method: string, params: unknown[]): Promise<T> {
   let failure: unknown = new Error("no RPC");
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-      const body = await res.json<{ result?: T; error?: { message?: string } }>();
-      if (body.error) throw new Error(body.error.message ?? "RPC error");
-      return body.result as T;
-    } catch (error) {
-      failure = error;
+  for (let round = 0; round < 3; round++) {
+    if (round > 0) await new Promise((resolve) => setTimeout(resolve, 400 * round));
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+        const body = await res.json<{ result?: T; error?: { message?: string } }>();
+        if (body.error) throw new Error(body.error.message ?? "RPC error");
+        return body.result as T;
+      } catch (error) {
+        failure = error;
+      }
     }
   }
   throw failure;

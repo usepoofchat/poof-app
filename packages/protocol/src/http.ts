@@ -116,9 +116,19 @@ const roomCountSchema = z.object({
   all: z.number().int().nonnegative(),
 });
 
-/** GET /api/stats: quant-rooms created, today (UTC day) and all time. */
+const roomCountsSchema = z.object({
+  classic: roomCountSchema,
+  super: roomCountSchema,
+  ai: roomCountSchema,
+});
+
+/**
+ * GET /api/stats: quant-rooms created, today (UTC day) and all time. `rooms` is real; `roomsV2` adds
+ * credited rooms on top of it (1–3 of each kind every hour, by a cron): not rooms anyone opened.
+ */
 export const statsResponseSchema = z.object({
-  rooms: z.object({ classic: roomCountSchema, super: roomCountSchema, ai: roomCountSchema }),
+  rooms: roomCountsSchema,
+  roomsV2: roomCountsSchema,
   at: z.number().int(),
 });
 export type StatsResponse = z.infer<typeof statsResponseSchema>;

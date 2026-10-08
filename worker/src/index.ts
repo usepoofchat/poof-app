@@ -26,7 +26,7 @@ import {
 } from "./http.ts";
 import { aiAttestation, aiChat, registerAi } from "./ai.ts";
 import { payConfig, redeem, spendPass, unspendPass } from "./pay.ts";
-import { countRoom, getStats } from "./stats.ts";
+import { countRoom, getStats, creditRooms } from "./stats.ts";
 import { positiveInt, randomId } from "./util.ts";
 
 export { RoomDO } from "./room-do.ts";
@@ -49,6 +49,11 @@ export default {
       return withCors(request, env.ALLOWED_ORIGINS, response);
     }
     return apiError("not_found", "Not found.", 404);
+  },
+
+  // Hourly (wrangler.jsonc triggers): credited quant-rooms for roomsV2 on /api/stats.
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await creditRooms(env);
   },
 } satisfies ExportedHandler<Env>;
 

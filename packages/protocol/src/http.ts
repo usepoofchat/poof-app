@@ -107,6 +107,22 @@ export const takeHandshakeResponseSchema = z.object({
   blob: z.string().max(HANDSHAKE_BLOB_MAX_BYTES),
 });
 
+/** classic = free Quant-Room, super = Super Quant-Room, ai = Super Quant-Room with the AI model. */
+export const roomKindSchema = z.enum(["classic", "super", "ai"]);
+export type RoomKind = z.infer<typeof roomKindSchema>;
+
+const roomCountSchema = z.object({
+  today: z.number().int().nonnegative(),
+  all: z.number().int().nonnegative(),
+});
+
+/** GET /api/stats: quant-rooms created, today (UTC day) and all time. */
+export const statsResponseSchema = z.object({
+  rooms: z.object({ classic: roomCountSchema, super: roomCountSchema, ai: roomCountSchema }),
+  at: z.number().int(),
+});
+export type StatsResponse = z.infer<typeof statsResponseSchema>;
+
 /** GET /api/health */
 export const healthResponseSchema = z.object({
   ok: z.literal(true),

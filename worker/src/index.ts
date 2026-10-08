@@ -26,6 +26,7 @@ import {
 } from "./http.ts";
 import { aiAttestation, aiChat, registerAi } from "./ai.ts";
 import { payConfig, redeem, spendPass, unspendPass } from "./pay.ts";
+import { countRoom, getStats } from "./stats.ts";
 import { positiveInt, randomId } from "./util.ts";
 
 export { RoomDO } from "./room-do.ts";
@@ -83,6 +84,11 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (path === "/api/health") {
     if (method !== "GET") return methodNotAllowed();
     return json({ ok: true, version: "1", commit: env.COMMIT_SHA });
+  }
+
+  if (path === "/api/stats") {
+    if (method !== "GET") return methodNotAllowed();
+    return getStats(request, env);
   }
 
   // Mutating endpoints: allowed origins only, and JSON content type (forces a CORS preflight cross-site).
@@ -185,6 +191,7 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
     ai: String(env.ROOM_AI_FREE) === "1",
   });
   if (!info) return apiError("internal_error", "Could not create room.", 500);
+  countRoom(env, "classic");
 
   const { peers: _peers, ...created } = info;
   return json(created satisfies CreateRoomResponse);
@@ -213,6 +220,7 @@ async function createSuperRoom(env: Env, ownerHash: string, pass: unknown): Prom
     await unspendPass(env, spent.msgHash);
     return apiError("internal_error", "Could not create room.", 500);
   }
+  countRoom(env, variant.ai ? "ai" : "super");
   const { peers: _peers, ...created } = info;
   return json(created satisfies CreateRoomResponse);
 }
@@ -253,6 +261,8 @@ async function upgradeRoom(
       return apiError("room_not_found", "Room not found.", 404);
     return apiError("internal_error", "Could not upgrade the room.", 500);
   }
+  // A free room upgraded with a pass is a Super Quant-Room from now on (it was counted as classic).
+  countRoom(env, variant.ai ? "ai" : "super");
   return json(result.info);
 }
 

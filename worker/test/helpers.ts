@@ -1,7 +1,8 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import {
   serverMessageSchema,
   type CreateRoomResponse,
+  type RoomKind,
   type ServerMessage,
   type ServerMessageType,
 } from "@poof/protocol";
@@ -24,6 +25,14 @@ export function postJson(
     headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
+}
+
+/** All-time quant-rooms of a kind, straight from D1 (rooms are counted in the background). */
+export async function totalOf(kind: RoomKind): Promise<number> {
+  const row = await env.LEDGER.prepare("SELECT count FROM room_totals WHERE kind = ?")
+    .bind(kind)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 /** Any well-formed owner hash, for tests that never destroy. */

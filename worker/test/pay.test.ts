@@ -14,7 +14,7 @@ import {
 } from "@poof/protocol";
 import { pad, toHex, verifyMessage, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { fromBase58, toBase58 } from "../src/base58.ts";
 import { setChainReadersForTests } from "../src/pay.ts";
@@ -25,7 +25,7 @@ import {
   type SolanaTransaction,
 } from "../src/payments.ts";
 import { fromBase64Url, toBase64Url } from "../src/util.ts";
-import { TestSocket, newOwner, peer } from "./helpers.ts";
+import { TestSocket, newOwner, peer, totalOf } from "./helpers.ts";
 
 const SITE = "https://usepoof.chat";
 const TREASURY = env.PAY_TREASURY as Hex;
@@ -591,6 +591,45 @@ describe("spending passes", () => {
     expect(
       (await post("/api/rooms", { ownerHash: (await newOwner()).ownerHash, pass })).status,
     ).toBe(200);
+  });
+});
+
+describe("stats counters", () => {
+  it("a Super Quant-Room counts as super, with the AI as ai; a refused pass counts nothing", async () => {
+    const [sup, ai] = [await totalOf("super"), await totalOf("ai")];
+    const pass = await buyPass(V4);
+    expect(
+      (await post("/api/rooms", { ownerHash: (await newOwner()).ownerHash, pass })).status,
+    ).toBe(200);
+    expect(
+      (await post("/api/rooms", { ownerHash: (await newOwner()).ownerHash, pass })).status,
+    ).toBe(409);
+    const aiPass = await buyPass({ lifetime: 3600, people: 1, ai: true });
+    expect(
+      (await post("/api/rooms", { ownerHash: (await newOwner()).ownerHash, pass: aiPass })).status,
+    ).toBe(200);
+    await vi.waitFor(async () => {
+      expect(await totalOf("super")).toBe(sup + 1);
+      expect(await totalOf("ai")).toBe(ai + 1);
+    });
+  });
+
+  it("an upgraded free room counts once as classic, then as super", async () => {
+    const owner = await newOwner();
+    const classic = await totalOf("classic");
+    const free = (await (await post("/api/rooms", { ownerHash: owner.ownerHash })).json()) as {
+      roomId: string;
+    };
+    await vi.waitFor(async () => expect(await totalOf("classic")).toBe(classic + 1));
+    const sup = await totalOf("super");
+    const pass = await buyPass(V4);
+    const res = await post(`/api/rooms/${free.roomId}/upgrade`, {
+      ownerSecret: owner.ownerSecret,
+      pass,
+    });
+    expect(res.status).toBe(200);
+    await vi.waitFor(async () => expect(await totalOf("super")).toBe(sup + 1));
+    expect(await totalOf("classic")).toBe(classic + 1);
   });
 });
 

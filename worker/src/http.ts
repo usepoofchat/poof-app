@@ -67,7 +67,7 @@ export function preflight(request: Request, allowedOrigins: string): Response {
     status: 204,
     headers: {
       "Access-Control-Allow-Origin": origin,
-      "Access-Control-Allow-Methods": "GET, POST, PUT",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE",
       "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Max-Age": CORS_MAX_AGE_SECONDS,
       Vary: "Origin",

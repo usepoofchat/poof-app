@@ -27,10 +27,12 @@ import {
 import { aiAttestation, aiChat, registerAi } from "./ai.ts";
 import { payConfig, redeem, spendPass, unspendPass } from "./pay.ts";
 import { countRoom, getStats, creditRooms } from "./stats.ts";
+import { createNote, noteForCreator, revealNote } from "./note.ts";
 import { positiveInt, randomId } from "./util.ts";
 
 export { RoomDO } from "./room-do.ts";
 export { MailboxDO } from "./mailbox-do.ts";
+export { NoteDO } from "./note-do.ts";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -144,6 +146,32 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (room) {
     if (method !== "GET") return methodNotAllowed();
     return getRoom(request, env, room[1]);
+  }
+
+  // Poof Note: create, the one reading, and the creator's status and delete.
+  if (path === "/api/notes") {
+    if (method !== "POST") return methodNotAllowed();
+    return createNote(request, env);
+  }
+  const note = /^\/api\/notes\/([^/]+)(\/reveal|\/status)?$/.exec(path);
+  if (note) {
+    if (note[2] === "/reveal") {
+      if (method !== "POST") return methodNotAllowed();
+      return revealNote(request, env, note[1]);
+    }
+    if (note[2] === "/status") {
+      if (method !== "POST") return methodNotAllowed();
+      return noteForCreator(request, env, note[1], "status");
+    }
+    if (method !== "DELETE") return methodNotAllowed();
+    // The one DELETE in the API: the same origin and content-type rules as the POSTs above.
+    if (!isAllowedOrigin(request, env.ALLOWED_ORIGINS)) {
+      return apiError("forbidden_origin", "Cross-origin requests are not allowed.", 403);
+    }
+    if (!hasJsonContentType(request)) {
+      return apiError("unsupported_media_type", "Content-Type must be application/json.", 415);
+    }
+    return noteForCreator(request, env, note[1], "remove");
   }
 
   const handshake = /^\/api\/handshakes\/([^/]+)(\/take)?$/.exec(path);

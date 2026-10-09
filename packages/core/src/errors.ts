@@ -38,7 +38,13 @@ export type PoofErrorCode =
   /** The AI enclave's attestation didn't check out: nothing was sent to it. */
   | "ai_attestation_failed"
   /** The AI answer broke off or couldn't be decrypted. */
-  | "ai_failed";
+  | "ai_failed"
+  /** Poof Note: already read, deleted or expired. */
+  | "note_gone"
+  /** Poof Note: the password (or the link) doesn't open this note. The note is still there. */
+  | "wrong_password"
+  /** Poof Note: the text is over the length limit once encrypted. */
+  | "note_too_long";
 
 /** Error with a stable machine-readable `code`; UI maps codes to copy, never `message`. */
 export class PoofError extends Error {

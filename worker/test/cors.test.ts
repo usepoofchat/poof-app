@@ -20,7 +20,7 @@ describe("CORS for the web app", () => {
     const ok = await preflight("/api/rooms", SITE);
     expect(ok.status).toBe(204);
     expect(ok.headers.get("Access-Control-Allow-Origin")).toBe(SITE);
-    expect(ok.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, PUT");
+    expect(ok.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, PUT, DELETE");
     expect(ok.headers.get("Access-Control-Allow-Headers")).toBe("Content-Type");
     expect(ok.headers.get("Access-Control-Allow-Credentials")).toBeNull();
 

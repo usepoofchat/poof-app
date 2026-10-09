@@ -49,6 +49,10 @@ export const errorCodeSchema = z.enum([
   "ai_forbidden",
   "ai_budget_exhausted",
   "ai_unavailable",
+  // Poof Note
+  "note_gone",
+  "note_exists",
+  "wrong_secret",
 ]);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 

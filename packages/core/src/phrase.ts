@@ -175,6 +175,25 @@ export async function joinByPhrase(opts: {
   appOrigin?: string;
   code: string;
 }): Promise<string> {
+  const target = await takePhraseUrl(opts, "That code doesn't open a room.");
+  let room: { roomId: string; key: Bytes };
+  try {
+    room = parseRoomLocation(target.pathname, target.hash);
+  } catch {
+    throw new PoofError("decrypt_failed", "That code doesn't open a room.");
+  }
+  return roomPath(room.roomId, room.key);
+}
+
+/**
+ * Open a phrase's one-time mailbox and return the link inside it, checked to be on the web app's own
+ * origin with no query string, so a malicious blob can't send the person elsewhere. What the link
+ * must look like beyond that (a room, a note) is up to the caller.
+ */
+export async function takePhraseUrl(
+  opts: { fetch: typeof fetch; origin: string; appOrigin?: string; code: string },
+  wrongMessage: string,
+): Promise<URL> {
   const phrase = normalizePhrase(opts.code);
   if (!phrase) throw new PoofError("invalid_code", "Enter the four words you were given.");
 
@@ -196,21 +215,20 @@ export async function joinByPhrase(opts: {
   const parsed = takeHandshakeResponseSchema.safeParse(await res.json().catch(() => null));
   if (!parsed.success) throw new PoofError("connection_failed", "Unexpected server response.");
 
-  const url = await openInvite(key, parsed.data.blob);
+  let url: string;
+  try {
+    url = await openInvite(key, parsed.data.blob);
+  } catch {
+    throw new PoofError("decrypt_failed", wrongMessage);
+  }
   let target: URL;
   try {
     target = new URL(url);
   } catch {
-    throw new PoofError("decrypt_failed", "That code doesn't open a room.");
+    throw new PoofError("decrypt_failed", wrongMessage);
   }
   if (target.origin !== new URL(opts.appOrigin ?? opts.origin).origin || target.search !== "") {
-    throw new PoofError("decrypt_failed", "That code doesn't open a room.");
+    throw new PoofError("decrypt_failed", wrongMessage);
   }
-  let room: { roomId: string; key: Bytes };
-  try {
-    room = parseRoomLocation(target.pathname, target.hash);
-  } catch {
-    throw new PoofError("decrypt_failed", "That code doesn't open a room.");
-  }
-  return roomPath(room.roomId, room.key);
+  return target;
 }

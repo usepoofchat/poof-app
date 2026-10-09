@@ -15,9 +15,14 @@
     "bindings": [
       { "name": "ROOM", "class_name": "RoomDO" },
       { "name": "MAILBOX", "class_name": "MailboxDO" },
+      { "name": "NOTE", "class_name": "NoteDO" },
     ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO", "MailboxDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RoomDO", "MailboxDO"] },
+    // Poof Note: one object per note, wiped by its alarm.
+    { "tag": "v2", "new_sqlite_classes": ["NoteDO"] },
+  ],
 
   // Super Quant-Room payments: pass keys, the payment ledger (price vs. what arrived) and spent
   // passes. Nothing in it links a payment to a quant-room. Schema: migrations/.
@@ -41,6 +46,8 @@
     { "name": "RL_HANDSHAKE", "namespace_id": "1004", "simple": { "limit": 10, "period": 60 } },
     { "name": "RL_PAY", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } },
     { "name": "RL_AI", "namespace_id": "1006", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_NOTE_CREATE", "namespace_id": "1007", "simple": { "limit": 10, "period": 60 } },
+    { "name": "RL_NOTE_READ", "namespace_id": "1008", "simple": { "limit": 30, "period": 60 } },
   ],
 
   "vars": {

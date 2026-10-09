@@ -24,6 +24,8 @@ export default defineConfig({
           RL_HANDSHAKE: generous("1004"),
           RL_PAY: generous("1005"),
           RL_AI: generous("1006"),
+          RL_NOTE_CREATE: generous("1007"),
+          RL_NOTE_READ: generous("1008"),
         },
         bindings: {
           TEST_MIGRATIONS: migrations,

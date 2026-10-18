@@ -16,7 +16,7 @@
     "@poof/protocol": "workspace:*"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.1",
     "@poof/tooling": "workspace:*",
     "@types/node": "^22.0.0",
     "eslint": "^10.12.0",
